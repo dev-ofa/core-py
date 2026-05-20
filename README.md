@@ -11,7 +11,7 @@
 - `core_py.httpx`：带 trace 透传、超时预算、有限重试与可插拔服务发现的 HTTP client。
 - `core_py.model`：实体、分页、审计字段与上下文审计注入。
 - `core_py.data`：业务错误码、错误类型、分页排序输入。
-- `core_py.dkit`：分布式原语协议、锁辅助、默认 ID 生成与内存实现，外部后端通过协议注入。
+- `core_py.dkit`：分布式原语协议、锁辅助、默认 ID 生成，以及内存、Redis、MongoDB 后端入口。
 
 ## 快速使用
 

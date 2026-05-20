@@ -8,5 +8,6 @@ __all__ = [
     "httpx",
     "logging",
     "model",
+    "resource",
     "trace",
 ]
