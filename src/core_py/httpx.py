@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import IO, Any, Protocol
 
 from core_py import context, logging, trace
 
@@ -87,6 +87,14 @@ class Response:
         if not self.body:
             return None
         return json.loads(self.body.decode("utf-8"))
+
+
+@dataclass(slots=True)
+class StreamResponse:
+    status_code: int
+    headers: Mapping[str, str]
+    body: IO[bytes]
+    url: str
 
 
 class Wrapper(Protocol):
@@ -292,6 +300,7 @@ class Agent:
         self.service = ServiceOptions()
         self._ops = list(ops)
         self._deadline: float | None = None
+        self._opener: Any | None = None
 
     def ops(self, *ops: AgentOp) -> Agent:
         self._ops.extend(ops)
@@ -330,6 +339,29 @@ class Agent:
         if last_err:
             raise last_err
 
+    def do_stream(self) -> StreamResponse:
+        self.init()
+        if not self.retry_opt:
+            return self._do_http_stream()
+        attempts = self.retry_opt.attempts or DEFAULT_RETRY_ATTEMPTS
+        if not self._can_retry_method():
+            attempts = 1
+        last_err: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._do_http_stream()
+            except Exception as exc:
+                last_err = exc
+                if attempt == attempts or not self._should_retry(exc):
+                    raise
+                delay = self._retry_delay(attempt)
+                if self._deadline and time.time() + delay >= self._deadline:
+                    raise
+                time.sleep(delay)
+        if last_err:
+            raise last_err
+        raise RuntimeError("httpx stream call failed")
+
     def _prepare_request(self) -> tuple[PreparedRequest, str]:
         if self._deadline and self._deadline <= time.time():
             raise TimeoutBudgetExhaustedError("httpx: timeout budget exhausted")
@@ -357,7 +389,8 @@ class Agent:
             request = urllib.request.Request(
                 req.url, data=req.body, headers=req.headers, method=req.method
             )
-            with urllib.request.urlopen(request, timeout=req.timeout) as response:  # noqa: S310 internal client wrapper
+            response_ctx = self._open_request(request, req.timeout)
+            with response_ctx as response:  # noqa: S310 internal client wrapper
                 body = response.read()
                 resp = Response(response.status, dict(response.headers), body, response.url)
         except urllib.error.HTTPError as exc:
@@ -405,6 +438,50 @@ class Agent:
                 duration_ms,
                 err,
             )
+
+    def _do_http_stream(self) -> StreamResponse:
+        req, request_id = self._prepare_request()
+        start = time.time()
+        logging.ctx_infof(
+            self.ctx,
+            "httpx request start method=%s path=%s",
+            req.method,
+            urllib.parse.urlparse(req.url).path,
+        )
+        try:
+            request = urllib.request.Request(
+                req.url, data=req.body, headers=req.headers, method=req.method
+            )
+            response = self._open_request(request, req.timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code in self.expected_status_codes:
+                self._log_end(req, exc.code, start, None)
+                return StreamResponse(exc.code, dict(exc.headers), exc, exc.url)
+            body = exc.read()
+            exc.close()
+            status_err = HTTPStatusError(exc.code, self.expected_status_codes, body)
+            err = CallError(req.method, req.url, request_id, status_err, exc.code)
+            self._log_end(req, exc.code, start, err)
+            raise err from status_err
+        except Exception as exc:
+            err = CallError(req.method, req.url, request_id, exc)
+            self._log_end(req, 0, start, err)
+            raise err from exc
+        status_code = getattr(response, "status", 200)
+        if status_code not in self.expected_status_codes:
+            body = response.read()
+            response.close()
+            status_err = HTTPStatusError(status_code, self.expected_status_codes, body)
+            err = CallError(req.method, req.url, request_id, status_err, status_code)
+            self._log_end(req, status_code, start, err)
+            raise err from status_err
+        self._log_end(req, status_code, start, None)
+        return StreamResponse(status_code, dict(response.headers), response, response.url)
+
+    def _open_request(self, request: urllib.request.Request, timeout: float | None) -> Any:
+        if self._opener is not None:
+            return self._opener.open(request, timeout=timeout)
+        return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 internal client wrapper
 
     def _can_retry_method(self) -> bool:
         return bool(self.retry_opt and self.retry_opt.idempotent) or self.method in {
@@ -585,6 +662,13 @@ def set_header(headers: Mapping[str, str]) -> AgentOp:
     return op
 
 
+def url_opener(opener: Any) -> AgentOp:
+    def op(agent: Agent) -> None:
+        agent._opener = opener
+
+    return op
+
+
 def resp_wrapper(wrapper: Wrapper) -> AgentOp:
     def op(agent: Agent) -> None:
         agent.resp_wrapper = wrapper
@@ -684,6 +768,7 @@ ExpectedStatusCodes = expected_status_codes
 TimeoutQuota = timeout_quota
 Service = service
 SetHeader = set_header
+URLOpener = url_opener
 RespWrapper = resp_wrapper
 CustomRespHandler = custom_resp_handler
 TextReq = text_req

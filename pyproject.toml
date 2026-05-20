@@ -23,6 +23,9 @@ classifiers = [
 dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
+dkit-mongo = ["pymongo>=4.7"]
+dkit-redis = ["redis>=5.0"]
+dkit = ["pymongo>=4.7", "redis>=5.0"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6",
