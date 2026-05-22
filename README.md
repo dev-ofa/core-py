@@ -1,6 +1,23 @@
 # core-py
 
-`core-py` 是 `core-go` 能力在 Python 侧的实现，采用 Python 指南推荐的 `src/` 布局，避免照搬 Go 的目录结构。
+`core-py` 是 `core-go` 能力在 Python 侧的实现，采用 Python 指南推荐的 `src/` 布局，`core-go` 目录可以参考，但实现和 API 以 Python 语言的最佳实践和规范为主。
+
+## API 约定
+
+- `core-py` 优先提供 Python 风格 API，公开接口使用 `snake_case` 命名。
+- 不要求保留 Go-style alias、大小写兼容入口或按 Go 包名一比一镜像的迁移层。
+- 与 `core-go` 对齐时，优先保证行为语义、协议字段、存储格式和运行时兼容，而不是逐个复刻 Go 命名。
+
+## 并发与 IO 约定
+
+- `core-py` 对运行期 IO 模块采用 async-first 设计；默认公开主路径应可 `await`，避免上游 async 服务在事件循环中误用阻塞 API。
+- 纯逻辑、纯数据和上下文传播模块保持同步 API；不要为了形式统一把不涉及运行期 IO 的能力机械改成 `async def`。
+- 新模块如果涉及网络、数据库、缓存、分布式锁、资源句柄或长生命周期后台任务，应优先提供异步 API，而不是先写同步实现再用异步外壳包装。
+- 当前仓库没有上游接入包袱时，不为新的 async-first 设计保留 sync 兼容层；如需破坏性调整，优先直接统一公开接口，而不是长期维护双套入口。
+- 库内部不要用 `asyncio.to_thread()`、线程池或同步客户端把阻塞实现伪装成异步主路径；确需桥接时，应明确限制场景，并避免成为默认入口。
+- 构造函数、属性访问和轻量辅助函数不应隐式执行运行期 IO；需要连接、初始化、打开流或启动后台任务时，应通过显式 `await` 或 `async with` 暴露。
+- 异步资源必须提供明确的关闭语义，例如 `aclose()`、`async with` 和取消后的清理保证；超时、取消、重试和资源释放应作为 API 语义的一部分设计。
+- 在 async 主路径中禁止 `time.sleep()`、同步 socket/HTTP/DB 调用和不受控后台线程；这类实现会阻塞事件循环，应替换为协程 sleep、异步客户端和可取消任务。
 
 ## 模块概览
 
@@ -9,7 +26,9 @@
 - `core_py.trace`：trace/request header 常量与 ID 生成。
 - `core_py.logging`：携带 trace/request 的统一日志门面。
 - `core_py.httpx`：带 trace 透传、超时预算、有限重试与可插拔服务发现的 HTTP client。
+- `core_py.resource`：统一资源标识解析、异步打开、下载与上传能力。
 - `core_py.model`：实体、分页、审计字段与上下文审计注入。
+- `core_py.model.mongox`：面向 Mongo collection 的异步仓储实现。
 - `core_py.data`：业务错误码、错误类型、分页排序输入。
 - `core_py.dkit`：分布式原语协议、锁辅助、默认 ID 生成，以及内存、Redis、MongoDB 后端入口。
 
@@ -31,14 +50,90 @@ cfg, meta = config.load(AppConfig, config.Options(required_keys=["db.uri"]))
 ```
 
 ```python
+import asyncio
+
 from core_py import context, httpx
 
-ctx = context.ctx_set_trace_id(context.empty_context(), "trace-1")
-ctx = context.ctx_set_operator(ctx, "user-1")
+async def main() -> None:
+    payload = {}
+    with context.use_context():
+        context.set_trace_id("trace-1")
+        context.set_operator("user-1")
+        await httpx.get(
+            "http://example.com/api",
+            httpx.json_resp(payload),
+        ).do()
 
-payload = {}
-httpx.get("http://example.com/api", httpx.Context(ctx), httpx.JSONResp(payload)).do()
+    print(payload)
+
+asyncio.run(main())
 ```
+
+```python
+import asyncio
+
+from core_py import resource
+
+async def main() -> None:
+    manager = resource.Manager()
+    async with await manager.open("ofa-res#data:text/plain;base64,aGVsbG8=") as stream:
+        body = await stream.body.read()
+        print(body.decode())
+
+asyncio.run(main())
+```
+
+```python
+import asyncio
+
+from core_py import dkit
+
+async def main() -> None:
+    atomic = dkit.InMemoryAtomic(default_ttl=1)
+    kit = await dkit.new_default_kit(atomic)
+
+    async def critical_section() -> None:
+        print(kit.get_id_string())
+
+    await kit.mutex_do("job", critical_section)
+    await atomic.close()
+
+asyncio.run(main())
+```
+
+```python
+import asyncio
+from dataclasses import dataclass
+
+from core_py import context, model
+from core_py.model import mongox
+
+@dataclass
+class Item(model.CreateAudit, model.UpdateAudit, model.DeleteAudit, model.TenantAudit):
+    id: str = ""
+    name: str = ""
+
+async def main(collection: object) -> None:
+    repo = mongox.CollectionRepository[str, Item](collection, Item).with_repo_opt(
+        model.RepoOpt(data_isolation=model.DATA_ISOLATION_TENANT)
+    )
+
+    with context.use_context():
+        context.set_operator("user-1")
+        context.set_tenant_id("tenant-1")
+        created = await repo.create(Item(id="i-1", name="first"))
+        loaded = await repo.get(created.id)
+        print(loaded.name)
+
+asyncio.run(main(collection))
+```
+
+## Async API 说明
+
+- 当前版本的运行期 IO 能力默认采用 async-first 设计，`httpx`、`resource`、`dkit`、`model.mongox` 的主路径都应在协程中通过 `await` 调用。
+- `context`、`trace`、`logging`、`config`、`data` 这类纯逻辑或启动期能力仍保持同步接口，可直接在 async 函数中配合使用。
+- 需要释放资源的对象应显式关闭，例如 `async with` 打开的 `resource.Stream`、`httpx.StreamResponse`，以及使用完成后的 `dkit.Atomic` 实例。
+- README 中的示例就是当前推荐用法，不再提供同步兼容写法。
 
 ## 命令
 

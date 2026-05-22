@@ -27,15 +27,3 @@ def new_request_id_with_time(now: datetime) -> str:
         now = now.astimezone(UTC).replace(tzinfo=None)
     suffix = base64.b32encode(secrets.token_bytes(10)).decode("ascii").rstrip("=").lower()
     return f"req_{now.strftime('%Y%m%d_%H%M%S')}_{suffix}"
-
-
-# Go-style compatibility aliases.
-HeaderTraceID = HEADER_TRACE_ID
-HeaderOperator = HEADER_OPERATOR
-HeaderTenantID = HEADER_TENANT_ID
-HeaderAppID = HEADER_APP_ID
-HeaderRequestID = HEADER_REQUEST_ID
-HeaderRemainingTimeoutMS = HEADER_REMAINING_TIMEOUT_MS
-NewTraceID = new_trace_id
-NewRequestID = new_request_id
-NewRequestIDWithTime = new_request_id_with_time

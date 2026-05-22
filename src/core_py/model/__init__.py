@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Generic, Protocol, TypeVar
 
-from core_py import context
+from core_py import context, data
 
 P = TypeVar("P", str, int)
 T = TypeVar("T")
@@ -20,8 +20,8 @@ def _now_ms() -> int:
     return int(_now().timestamp() * 1000)
 
 
-class OperatorCarrier(Protocol):
-    def set_user(self, user: str) -> None: ...
+def _missing_context_error(message: str) -> data.BaseError:
+    return data.new_validate_error(message)
 
 
 class TenantCarrier(Protocol):
@@ -43,9 +43,6 @@ class CreateAudit:
         return self.created_by, self.created_at
 
     def set_creator(self, user: str) -> None:
-        self.set_user(user)
-
-    def set_user(self, user: str) -> None:
         self.created_by = user
         self.created_at = _now()
 
@@ -64,9 +61,6 @@ class CreateAuditMs:
         ) if self.created_at else None
 
     def set_creator(self, user: str) -> None:
-        self.set_user(user)
-
-    def set_user(self, user: str) -> None:
         self.created_by = user
         self.created_at = _now_ms()
 
@@ -83,9 +77,6 @@ class UpdateAudit:
         return self.updated_by, self.updated_at
 
     def set_updater(self, user: str) -> None:
-        UpdateAudit.set_user(self, user)
-
-    def set_user(self, user: str) -> None:
         self.updated_by = user
         self.updated_at = _now()
 
@@ -104,9 +95,6 @@ class UpdateAuditMs:
         ) if self.updated_at else None
 
     def set_updater(self, user: str) -> None:
-        UpdateAuditMs.set_user(self, user)
-
-    def set_user(self, user: str) -> None:
         self.updated_by = user
         self.updated_at = _now_ms()
 
@@ -123,9 +111,6 @@ class DeleteAudit:
         return self.deleted_by, self.deleted_at
 
     def set_deleter(self, user: str) -> None:
-        DeleteAudit.set_user(self, user)
-
-    def set_user(self, user: str) -> None:
         self.deleted_by = user
         self.deleted_at = _now()
 
@@ -144,9 +129,6 @@ class DeleteAuditMs:
         ) if self.deleted_at else None
 
     def set_deleter(self, user: str) -> None:
-        DeleteAuditMs.set_user(self, user)
-
-    def set_user(self, user: str) -> None:
         self.deleted_by = user
         self.deleted_at = _now_ms()
 
@@ -204,6 +186,19 @@ class PagedResult(Generic[T]):
     total_count: int
 
 
+class Repo(Protocol[P, T]):
+    async def get(self, id_: P) -> T: ...
+    async def create(self, doc: T) -> T: ...
+    async def update(self, doc: T) -> T: ...
+    async def upsert(self, doc: T) -> T: ...
+    async def patch(self, doc: T) -> None: ...
+    async def delete(self, doc: T) -> None: ...
+    async def batch_create(self, docs: list[T]) -> None: ...
+    async def batch_update(self, docs: list[T]) -> None: ...
+    async def batch_delete(self, docs: list[T]) -> tuple[int, None]: ...
+    async def batch_delete_by_ids(self, ids: list[P]) -> tuple[int, None]: ...
+
+
 @dataclass
 class RepoOpt:
     deploy_isolation: str = ""
@@ -211,6 +206,12 @@ class RepoOpt:
     update_run_context: str = ""
     try_fix_sync_delay: str = ""
     soft_delete: str = ""
+
+
+@dataclass(slots=True)
+class UpdatesResult:
+    has_original_update: bool = False
+    original_updated_at: Any = None
 
 
 CTX_KEY_REPO_OPT = "repo-opt"
@@ -229,53 +230,49 @@ SOFT_DELETE_ENABLE = ""
 SOFT_DELETE_DISABLE = "disable"
 
 
-def ctx_repo_opt_or_new(ctx: context.Context | None) -> RepoOpt:
-    value = (ctx or {}).get(CTX_KEY_REPO_OPT)
+def repo_opt_or_new() -> RepoOpt:
+    value = context.current_context().get(CTX_KEY_REPO_OPT)
     return value if isinstance(value, RepoOpt) else RepoOpt()
 
 
-def _set_ctx_repo_opt(ctx: context.Context | None, opt: RepoOpt) -> dict[str, Any]:
-    ret: dict[str, Any] = dict(ctx or {})
-    ret[CTX_KEY_REPO_OPT] = opt
-    return ret
+def _set_repo_opt(opt: RepoOpt) -> None:
+    current = context.current_context()
+    current[CTX_KEY_REPO_OPT] = opt
+    context.set_current_context(current)
 
 
-def set_ctx_repo_data_isolation(ctx: context.Context | None, data_isolation: str) -> dict[str, Any]:
-    opt = ctx_repo_opt_or_new(ctx)
+def set_repo_data_isolation(data_isolation: str) -> None:
+    opt = repo_opt_or_new()
     opt.data_isolation = data_isolation
-    return _set_ctx_repo_opt(ctx, opt)
+    _set_repo_opt(opt)
 
 
-def set_ctx_repo_deploy_isolation(
-    ctx: context.Context | None, deploy_isolation: str
-) -> dict[str, Any]:
-    opt = ctx_repo_opt_or_new(ctx)
+def set_repo_deploy_isolation(deploy_isolation: str) -> None:
+    opt = repo_opt_or_new()
     opt.deploy_isolation = deploy_isolation
-    return _set_ctx_repo_opt(ctx, opt)
+    _set_repo_opt(opt)
 
 
-def set_ctx_repo_update_run_context(
-    ctx: context.Context | None, update_run_context: str
-) -> dict[str, Any]:
-    opt = ctx_repo_opt_or_new(ctx)
+def set_repo_update_run_context(update_run_context: str) -> None:
+    opt = repo_opt_or_new()
     opt.update_run_context = update_run_context
-    return _set_ctx_repo_opt(ctx, opt)
+    _set_repo_opt(opt)
 
 
-def set_ctx_soft_delete(ctx: context.Context | None, soft_delete: str) -> dict[str, Any]:
-    opt = ctx_repo_opt_or_new(ctx)
+def set_soft_delete(soft_delete: str) -> None:
+    opt = repo_opt_or_new()
     opt.soft_delete = soft_delete
-    return _set_ctx_repo_opt(ctx, opt)
+    _set_repo_opt(opt)
 
 
-def set_ctx_fixed_strategy(ctx: context.Context | None, fixed_strategy: str) -> dict[str, Any]:
-    opt = ctx_repo_opt_or_new(ctx)
+def set_fixed_strategy(fixed_strategy: str) -> None:
+    opt = repo_opt_or_new()
     opt.try_fix_sync_delay = fixed_strategy
-    return _set_ctx_repo_opt(ctx, opt)
+    _set_repo_opt(opt)
 
 
-def ctx_merge_repo_opt(ctx: context.Context | None, merge: RepoOpt | None) -> RepoOpt:
-    opt = ctx_repo_opt_or_new(ctx)
+def merge_repo_opt(merge: RepoOpt | None) -> RepoOpt:
+    opt = repo_opt_or_new()
     if merge is None:
         return opt
     return RepoOpt(
@@ -287,74 +284,86 @@ def ctx_merge_repo_opt(ctx: context.Context | None, merge: RepoOpt | None) -> Re
     )
 
 
-def ctx_create_audit(ctx: context.Context | None, entity: Any) -> None:
+def create_audit(entity: Any) -> None:
     if hasattr(entity, "set_creator"):
-        user, ok = context.ctx_get_operator(ctx)
+        user, ok = context.get_operator()
         if not ok:
-            raise ValueError("there is no user in context")
+            raise _missing_context_error("there is no user in context")
         entity.set_creator(user)
     if hasattr(entity, "set_tenant_id") and hasattr(entity, "set_app_id"):
-        tenant_id, ok = context.ctx_get_tenant_id(ctx)
+        tenant_id, ok = context.get_tenant_id()
         if not ok:
-            raise ValueError("there is no tenantid in context")
-        app_id, ok = context.ctx_get_app_id(ctx)
+            raise _missing_context_error("there is no tenantid in context")
+        app_id, ok = context.get_app_id()
         if not ok:
-            raise ValueError("there is no appid in context")
+            raise _missing_context_error("there is no appid in context")
         entity.set_tenant_id(tenant_id)
         entity.set_app_id(app_id)
-    ctx_update_audit(ctx, entity)
+    update_audit(entity)
 
 
-def ctx_update_audit(ctx: context.Context | None, entity: Any) -> None:
+def update_audit(entity: Any) -> None:
     if hasattr(entity, "set_updater"):
-        user, ok = context.ctx_get_operator(ctx)
+        user, ok = context.get_operator()
         if not ok:
-            raise ValueError("there is no user in context")
+            raise _missing_context_error("there is no user in context")
         entity.set_updater(user)
 
 
-def ctx_update_audit_and_env(ctx: context.Context | None, entity: Any) -> None:
-    ctx_update_audit(ctx, entity)
+def update_audit_and_env(entity: Any) -> None:
+    update_audit(entity)
 
 
-def ctx_delete_audit(ctx: context.Context | None, entity: Any) -> tuple[bool, None]:
+def update_lock_and_audit(entity: Any, opt: RepoOpt | None = None) -> UpdatesResult:
+    repo_opt = opt or RepoOpt()
+    original_updated_at = None
+    if hasattr(entity, "get_update_time_raw"):
+        original_updated_at = entity.get_update_time_raw()
+
+    if repo_opt.update_run_context == UPDATE_RUN_CONTEXT_ALWAYS:
+        update_audit_and_env(entity)
+    else:
+        update_audit(entity)
+
+    return UpdatesResult(
+        has_original_update=bool(original_updated_at),
+        original_updated_at=original_updated_at,
+    )
+
+
+def delete_audit(entity: Any) -> tuple[bool, None]:
     if hasattr(entity, "set_deleter"):
-        user, ok = context.ctx_get_operator(ctx)
+        user, ok = context.get_operator()
         if not ok:
-            raise ValueError("there is no user in context")
+            raise _missing_context_error("there is no user in context")
         entity.set_deleter(user)
         return True, None
     return False, None
 
 
-def ctx_audit(ctx: context.Context | None, auditors: list[Any]) -> None:
+def audit(auditors: list[Any]) -> None:
     for auditor in auditors:
-        if hasattr(auditor, "set_user"):
-            user, ok = context.ctx_get_operator(ctx)
+        if hasattr(auditor, "set_creator"):
+            user, ok = context.get_operator()
             if not ok:
-                raise ValueError("there is no user in context")
-            auditor.set_user(user)
+                raise _missing_context_error("there is no user in context")
+            auditor.set_creator(user)
+        elif hasattr(auditor, "set_updater"):
+            user, ok = context.get_operator()
+            if not ok:
+                raise _missing_context_error("there is no user in context")
+            auditor.set_updater(user)
+        elif hasattr(auditor, "set_deleter"):
+            user, ok = context.get_operator()
+            if not ok:
+                raise _missing_context_error("there is no user in context")
+            auditor.set_deleter(user)
         if hasattr(auditor, "set_tenant_id") and hasattr(auditor, "set_app_id"):
-            tenant_id, ok = context.ctx_get_tenant_id(ctx)
+            tenant_id, ok = context.get_tenant_id()
             if not ok:
-                raise ValueError("there is no tenantid in context")
-            app_id, ok = context.ctx_get_app_id(ctx)
+                raise _missing_context_error("there is no tenantid in context")
+            app_id, ok = context.get_app_id()
             if not ok:
-                raise ValueError("there is no appid in context")
+                raise _missing_context_error("there is no appid in context")
             auditor.set_tenant_id(tenant_id)
             auditor.set_app_id(app_id)
-
-
-# Go-style aliases.
-CtxCreateAudit = ctx_create_audit
-CtxUpdateAudit = ctx_update_audit
-CtxUpdateAuditAndEnv = ctx_update_audit_and_env
-CtxDeleteAudit = ctx_delete_audit
-CtxAudit = ctx_audit
-CtxRepoOptOrNew = ctx_repo_opt_or_new
-CtxMergeRepoOpt = ctx_merge_repo_opt
-SetCtxRepoDataIsolation = set_ctx_repo_data_isolation
-SetCtxRepoDeployIsolation = set_ctx_repo_deploy_isolation
-SetCtxRepoUpdateRunContext = set_ctx_repo_update_run_context
-SetCtxSoftDelete = set_ctx_soft_delete
-SetCtxFixedStrategy = set_ctx_fixed_strategy

@@ -12,15 +12,16 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from email.message import Message
-from http.client import HTTPMessage
 from io import BytesIO
-from typing import IO, Protocol, cast
+from typing import Any, Protocol
 
-from core_py import context as ctx_mod
+import aiofiles  # type: ignore[import-untyped]
+
 from core_py import httpx
+from core_py._async import AsyncReadable, ensure_async_readable, maybe_await
 
 DEFAULT_MAX_BYTES = 32 << 20
 DEFAULT_DATA_MAX_BYTES = 1 << 20
@@ -123,17 +124,34 @@ class Identifier:
 
 @dataclass(slots=True)
 class Stream:
-    body: IO[bytes]
+    body: AsyncReadable | Any
     media_type: str = ""
     filename: str = ""
     size: int = -1
     source_uri: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.body = ensure_async_readable(self.body)
+
+    async def close(self) -> None:
+        await self.body.aclose()
+
+    async def __aenter__(self) -> Stream:
+        return self
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        await self.close()
+
 
 @dataclass(slots=True)
 class UploadInput:
-    body: IO[bytes] | None = None
+    body: Any | None = None
     media_type: str = ""
     filename: str = ""
     auth_id: str = ""
@@ -141,12 +159,12 @@ class UploadInput:
 
 
 class ResourceHandler(Protocol):
-    def open(self, ctx: ctx_mod.Context | None, identifier: Identifier) -> Stream: ...
-    def upload(self, ctx: ctx_mod.Context | None, value: UploadInput) -> Identifier: ...
+    def open(self, identifier: Identifier) -> Stream | Awaitable[Stream]: ...
+    def upload(self, value: UploadInput) -> Identifier | Awaitable[Identifier]: ...
 
 
-OpenFunc = Callable[[ctx_mod.Context | None, Identifier], Stream]
-UploadFunc = Callable[[ctx_mod.Context | None, UploadInput], Identifier]
+OpenFunc = Callable[[Identifier], Stream | Awaitable[Stream]]
+UploadFunc = Callable[[UploadInput], Identifier | Awaitable[Identifier]]
 
 
 @dataclass(slots=True)
@@ -154,19 +172,20 @@ class HandlerFuncs:
     open_func: OpenFunc | None = None
     upload_func: UploadFunc | None = None
 
-    def open(self, ctx: ctx_mod.Context | None, identifier: Identifier) -> Stream:
+    async def open(self, identifier: Identifier) -> Stream:
         if self.open_func is None:
             raise OpenUnsupportedError("resource: open unsupported")
-        return self.open_func(ctx, identifier)
+        return await maybe_await(self.open_func(identifier))
 
-    def upload(self, ctx: ctx_mod.Context | None, value: UploadInput) -> Identifier:
+    async def upload(self, value: UploadInput) -> Identifier:
         if self.upload_func is None:
             raise UploadUnsupportedError("resource: upload unsupported")
-        return self.upload_func(ctx, value)
+        return await maybe_await(self.upload_func(value))
 
 
 @dataclass(slots=True)
 class Options:
+    http_client: Any | None = None
     max_bytes: int = DEFAULT_MAX_BYTES
     data_max_bytes: int = DEFAULT_DATA_MAX_BYTES
     timeout_quota: float = DEFAULT_TIMEOUT_QUOTA
@@ -225,6 +244,14 @@ def with_retry(attempts: int, base_delay: float, max_delay: float) -> Option:
     return op
 
 
+def with_http_client(client: Any | None) -> Option:
+    def op(options: Options) -> None:
+        if client is not None:
+            options.http_client = client
+
+    return op
+
+
 def with_http_enabled(enabled: bool) -> Option:
     def op(options: Options) -> None:
         options.enable_http = enabled
@@ -252,33 +279,34 @@ class Manager:
             raise ValueError(f"invalid scheme {scheme!r}")
         self._handlers[scheme] = handler
 
-    def open(self, ctx: ctx_mod.Context | None, raw: str) -> Stream:
+    async def open(self, raw: str) -> Stream:
         identifier = parse(raw)
         try:
             handler = self._handler(identifier.scheme)
-            stream = handler.open(ctx, identifier)
+            stream = await maybe_await(handler.open(identifier))
         except Exception as exc:
             raise OpenError(identifier, exc) from exc
         if stream is None or stream.body is None:
             raise OpenError(identifier, ValueError("handler returned empty stream"))
         return stream
 
-    def download(self, ctx: ctx_mod.Context | None, raw: str, dst_path: str) -> None:
+    async def download(self, raw: str, dst_path: str) -> None:
         if not dst_path:
             raise DownloadError(dst_path, ValueError("dst_path is empty"))
         try:
-            stream = self.open(ctx, raw)
+            stream = await self.open(raw)
             parent = os.path.dirname(dst_path) or "."
             if not os.path.isdir(parent):
                 raise ValueError("destination parent is not a directory")
             fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{os.path.basename(dst_path)}.tmp-", dir=parent
             )
+            os.close(fd)
             ok = False
             try:
-                with os.fdopen(fd, "wb") as tmp:
-                    while chunk := stream.body.read(1024 * 64):
-                        tmp.write(chunk)
+                async with aiofiles.open(tmp_path, "wb") as tmp:
+                    while chunk := await stream.body.read(1024 * 64):
+                        await tmp.write(chunk)
                 if (
                     stream.size >= 0
                     and self.opts.max_bytes > 0
@@ -288,7 +316,7 @@ class Manager:
                 os.replace(tmp_path, dst_path)
                 ok = True
             finally:
-                stream.body.close()
+                await stream.close()
                 if not ok:
                     with contextlib_suppress_file_not_found():
                         os.remove(tmp_path)
@@ -297,12 +325,12 @@ class Manager:
         except Exception as exc:
             raise DownloadError(dst_path, exc) from exc
 
-    def upload(self, ctx: ctx_mod.Context | None, scheme: str, value: UploadInput) -> Identifier:
+    async def upload(self, scheme: str, value: UploadInput) -> Identifier:
         if not scheme or scheme.lower() != scheme or not _SCHEME_RE.fullmatch(scheme):
             raise UploadError(scheme, ValueError(f"invalid scheme {scheme!r}"))
         try:
             handler = self._handler(scheme)
-            return handler.upload(ctx, value)
+            return await maybe_await(handler.upload(value))
         except Exception as exc:
             raise UploadError(scheme, exc) from exc
 
@@ -319,9 +347,9 @@ class contextlib_suppress_file_not_found:
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
+        _exc_type: type[BaseException] | None,
         exc: BaseException | None,
-        traceback: object,
+        _traceback: object,
     ) -> bool:
         return isinstance(exc, FileNotFoundError)
 
@@ -401,7 +429,7 @@ class _DataHandler:
     def __init__(self, options: Options) -> None:
         self.max_bytes = options.data_max_bytes
 
-    def open(self, ctx: ctx_mod.Context | None, identifier: Identifier) -> Stream:
+    async def open(self, identifier: Identifier) -> Stream:
         media_type, body = _parse_data_url(identifier.source_uri)
         if (
             identifier.media_type
@@ -422,7 +450,7 @@ class _DataHandler:
             source_uri=identifier.source_uri,
         )
 
-    def upload(self, ctx: ctx_mod.Context | None, value: UploadInput) -> Identifier:
+    def upload(self, _value: UploadInput) -> Identifier:
         raise UploadUnsupportedError("resource: upload unsupported")
 
 
@@ -448,37 +476,38 @@ class _HTTPHandler:
         self.retry_attempts = options.retry_attempts
         self.retry_base_delay = options.retry_base_delay
         self.retry_max_delay = options.retry_max_delay
-        self._opener = urllib.request.build_opener(_RedirectLimitHandler(options.redirect_limit))
+        self._opener = options.http_client
 
-    def open(self, ctx: ctx_mod.Context | None, identifier: Identifier) -> Stream:
-        resp = httpx.get(
-            identifier.source_uri,
-            httpx.Context(ctx),
-            httpx.URLOpener(self._opener),
-            httpx.TimeoutQuota(self.timeout_quota),
-            httpx.ExpectedStatusCodes(list(_success_status_codes())),
-            httpx.Retry(
+    async def open(self, identifier: Identifier) -> Stream:
+        ops = [
+            httpx.timeout_quota(self.timeout_quota),
+            httpx.expected_status_codes(list(_success_status_codes())),
+            httpx.max_redirects(self.redirect_limit),
+            httpx.retry(
                 httpx.RetryOpt(
                     attempts=self.retry_attempts,
                     base_delay=self.retry_base_delay,
                     max_delay=self.retry_max_delay,
                 )
             ),
-        ).do_stream()
+        ]
+        if self._opener is not None:
+            ops.append(httpx.url_opener(self._opener))
+        resp = await httpx.get(identifier.source_uri, *ops).do_stream()
 
         headers = dict(resp.headers)
         content_length = str(headers.get("Content-Length", ""))
         size = _parse_content_length(content_length)
         if self.max_bytes > 0 and size > self.max_bytes:
-            resp.body.close()
+            await resp.body.aclose()
             raise SizeLimitExceededError("resource: size limit exceeded")
         media_type = str(headers.get("Content-Type", "")) or identifier.media_type
         filename = identifier.params.get("filename", "") or _filename_from_disposition(
             str(headers.get("Content-Disposition", ""))
         )
-        body: IO[bytes] = resp.body
+        body: AsyncReadable = resp.body
         if self.max_bytes > 0:
-            body = cast(IO[bytes], _LimitReadCloser(resp.body, self.max_bytes))
+            body = _LimitReadCloser(resp.body, self.max_bytes)
         return Stream(
             body=body,
             media_type=media_type,
@@ -488,47 +517,26 @@ class _HTTPHandler:
             headers=headers,
         )
 
-    def upload(self, ctx: ctx_mod.Context | None, value: UploadInput) -> Identifier:
+    def upload(self, _value: UploadInput) -> Identifier:
         raise UploadUnsupportedError("resource: upload unsupported")
 
 
-class _RedirectLimitHandler(urllib.request.HTTPRedirectHandler):
-    def __init__(self, limit: int) -> None:
-        self.limit = limit
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: IO[bytes],
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        count = int(getattr(req, "_ofa_redirect_count", 0))
-        if self.limit >= 0 and count >= self.limit:
-            raise urllib.error.HTTPError(
-                newurl, code, f"stopped after {self.limit} redirects", headers, fp
-            )
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is not None:
-            redirected._ofa_redirect_count = count + 1  # type: ignore[attr-defined]
-        return redirected
-
-
 class _LimitReadCloser:
-    def __init__(self, body: IO[bytes], max_bytes: int) -> None:
+    def __init__(self, body: AsyncReadable, max_bytes: int) -> None:
         self.body = body
         self.max_bytes = max_bytes
         self.read_bytes = 0
         self.over = False
 
-    def read(self, size: int = -1) -> bytes:
+    async def read(self, size: int = -1) -> bytes:
         if self.over:
             raise SizeLimitExceededError("resource: size limit exceeded")
         remaining = self.max_bytes - self.read_bytes
+        if remaining <= 0:
+            self.over = True
+            raise SizeLimitExceededError("resource: size limit exceeded")
         if size < 0:
-            data = self.body.read(remaining + 1)
+            data = await self.body.read(remaining + 1)
             self.read_bytes += len(data)
             if self.read_bytes > self.max_bytes:
                 self.over = True
@@ -537,17 +545,16 @@ class _LimitReadCloser:
         read_limit = remaining + 1
         if size < read_limit:
             read_limit = size
-        data = self.body.read(read_limit)
+        data = await self.body.read(read_limit)
         self.read_bytes += len(data)
         if self.read_bytes > self.max_bytes:
             self.over = True
-            allowed = len(data) - (self.read_bytes - self.max_bytes)
             self.read_bytes = self.max_bytes
-            return data[: max(0, allowed)]
+            raise SizeLimitExceededError("resource: size limit exceeded")
         return data
 
-    def close(self) -> None:
-        self.body.close()
+    async def aclose(self) -> None:
+        await self.body.aclose()
 
 
 def _parse_content_length(raw: str) -> int:
@@ -578,27 +585,3 @@ def _same_media_type(a: str, b: str) -> bool:
 
 def _success_status_codes() -> set[int]:
     return {200, 201, 202, 203, 204, 205, 206, 207, 208, 226}
-
-
-def _should_retry(exc: Exception) -> bool:
-    return isinstance(exc, HTTPStatusError) and exc.status_code >= 500
-
-
-def new_manager(*ops: Option) -> Manager:
-    return Manager(*ops)
-
-
-# Go-style compatibility aliases.
-ErrUnsupportedScheme = ERR_UNSUPPORTED_SCHEME
-ErrOpenUnsupported = ERR_OPEN_UNSUPPORTED
-ErrUploadUnsupported = ERR_UPLOAD_UNSUPPORTED
-ErrSizeLimitExceeded = ERR_SIZE_LIMIT_EXCEEDED
-ErrTimeoutBudgetExhausted = ERR_TIMEOUT_BUDGET_EXHAUSTED
-Parse = parse
-NewManager = new_manager
-WithMaxBytes = with_max_bytes
-WithDataMaxBytes = with_data_max_bytes
-WithTimeoutQuota = with_timeout_quota
-WithRedirectLimit = with_redirect_limit
-WithRetry = with_retry
-WithHTTPEnabled = with_http_enabled

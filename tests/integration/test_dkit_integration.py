@@ -5,7 +5,8 @@ import pytest
 from core_py import dkit
 
 
-def test_redis_atomic_integration_when_configured():
+@pytest.mark.asyncio
+async def test_redis_atomic_integration_when_configured():
     uri = os.getenv("OFA_DKIT_REDIS_URI")
     if not uri:
         pytest.skip("OFA_DKIT_REDIS_URI is not set")
@@ -14,11 +15,13 @@ def test_redis_atomic_integration_when_configured():
     atomic = dkit.RedisAtomic(client, key_prefix="core_py_test", default_ttl=1)
 
     mutex = atomic.new_mutex("integration")
-    assert mutex.try_lock(None) is True
-    mutex.unlock(None)
+    assert await mutex.try_lock() is True
+    await mutex.unlock()
+    await atomic.close()
 
 
-def test_mongo_atomic_integration_when_configured():
+@pytest.mark.asyncio
+async def test_mongo_atomic_integration_when_configured():
     uri = os.getenv("OFA_DKIT_MONGO_URI")
     if not uri:
         pytest.skip("OFA_DKIT_MONGO_URI is not set")
@@ -28,5 +31,6 @@ def test_mongo_atomic_integration_when_configured():
     atomic = dkit.MongoAtomic(database, collection_prefix="dkit", default_ttl=1)
 
     mutex = atomic.new_mutex("integration")
-    assert mutex.try_lock(None) is True
-    mutex.unlock(None)
+    assert await mutex.try_lock() is True
+    await mutex.unlock()
+    await atomic.close()

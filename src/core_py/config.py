@@ -43,10 +43,6 @@ class Meta:
     summary: dict[str, Any]
 
 
-def new_options() -> Options:
-    return Options()
-
-
 @overload
 def load(model: type[T], opts: Options | None = None) -> tuple[T, Meta]: ...
 
@@ -105,8 +101,8 @@ def load(
     cfg_hash = _hash_map(merged)
     summary = _mask_map(merged, opts.sensitive_keys)
     if opts.log_enabled:
-        logging.infof("config loaded from %s", ",".join(sources))
-        logging.infof("config_hash=%s summary=%s", cfg_hash, json.dumps(summary, sort_keys=True))
+        logging.info("config loaded from %s", ",".join(sources))
+        logging.info("config_hash=%s summary=%s", cfg_hash, json.dumps(summary, sort_keys=True))
 
     decode_model: type[Any] = dict if model is None else model
     out = _decode(decode_model, merged, strict=opts.strict)
@@ -360,14 +356,35 @@ def _decode_value(tp: Any, value: Any, *, strict: bool) -> Any:
         return [_decode_value(item_tp, v, strict=strict) for v in value]
     if origin is dict:
         return dict(value)
+    if tp is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            parsed = _parse_bool(value)
+            if parsed is not None:
+                return parsed
+        raise ValueError(f"expected bool, got {value!r}")
+    if tp is int:
+        if isinstance(value, bool):
+            raise ValueError(f"expected int, got {value!r}")
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"expected int, got {value!r}") from exc
+    if tp is float:
+        if isinstance(value, bool):
+            raise ValueError(f"expected float, got {value!r}")
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"expected float, got {value!r}") from exc
     try:
-        if tp in (str, int, float, bool) and value is not None:
+        if tp is str and value is not None:
             return tp(value)
     except (TypeError, ValueError):
         return value
     return value
-
-
-# Go-style aliases.
-NewOptions = new_options
-Load = load
