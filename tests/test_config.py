@@ -22,6 +22,17 @@ class AppConfig:
     debug: bool = False
 
 
+@dataclass
+class FeatureConfig:
+    ratio: float = 0.0
+    enabled: bool = False
+
+
+@dataclass
+class StrictConfig:
+    name: str = ""
+
+
 def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
@@ -60,3 +71,105 @@ def test_sensitive_file_value_must_be_overridden_by_env(tmp_path):
                 default_config_path=str(path), sensitive_keys=["uri"], log_enabled=False
             ),
         )
+
+
+def test_load_reads_env_file_and_runs_validators(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("feature:\n  ratio: 0.5\n  enabled: false\n")
+    (cfg_dir / "config.dev.yaml").write_text("feature:\n  ratio: 0.75\n")
+    seen: dict[str, object] = {}
+
+    def validate_map(raw: dict[str, object]) -> None:
+        seen["map"] = raw["feature"]
+
+    def validate_config(cfg: dict[str, object]) -> None:
+        seen["config"] = cfg["feature"]
+
+    monkeypatch.setenv("ENV", "DEV")
+    out, meta = config.load(
+        dict,
+        config.Options(
+            default_config_path=str(cfg_dir / "config.yaml"),
+            validate_map=validate_map,
+            validate_config=validate_config,
+            sensitive_keys=[],
+            log_enabled=False,
+        ),
+    )
+
+    assert out == {"feature": {"ratio": 0.75, "enabled": False}}
+    assert meta.sources == ["default", "env-file"]
+    assert seen == {
+        "map": {"ratio": 0.75, "enabled": False},
+        "config": {"ratio": 0.75, "enabled": False},
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        pytest.param(["--debug=maybe"], "expected bool", id="非法布尔值"),
+        pytest.param(["--http.port=oops"], "expected int", id="非法整数"),
+        pytest.param(["--feature.ratio=oops"], "expected float", id="非法浮点数"),
+    ],
+)
+def test_load_rejects_invalid_scalar_overrides(args, message):
+    @dataclass
+    class LocalConfig:
+        http: HTTPConfig = field(default_factory=HTTPConfig)
+        feature: FeatureConfig = field(default_factory=FeatureConfig)
+        debug: bool = False
+
+    with pytest.raises(ValueError, match=message):
+        config.load(
+            LocalConfig,
+            config.Options(args=args, sensitive_keys=[], log_enabled=False),
+        )
+
+
+def test_load_honors_strict_unknown_field_flag(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("name: demo\nextra: ignored\n")
+
+    with pytest.raises(ValueError, match="unknown config fields"):
+        config.load(
+            StrictConfig,
+            config.Options(default_config_path=str(path), sensitive_keys=[], log_enabled=False),
+        )
+
+    out, _ = config.load(
+        StrictConfig,
+        config.Options(
+            default_config_path=str(path),
+            sensitive_keys=[],
+            strict=False,
+            log_enabled=False,
+        ),
+    )
+    assert out == StrictConfig(name="demo")
+
+
+def test_private_helpers_normalize_and_mask_values(monkeypatch):
+    monkeypatch.setenv("APP.DB.URI", "postgres://env-user:env-pass@db.example/app")
+    monkeypatch.setenv("APP.HTTP.PORT", "8080")
+
+    assert config._env_to_map("APP", ".") == {
+        "db": {"uri": "postgres://env-user:env-pass@db.example/app"},
+        "http": {"port": "8080"},
+    }
+    assert config._args_to_map(["--feature.enabled=true", "--feature.ratio=0.8"]) == {
+        "feature": {"enabled": "true", "ratio": "0.8"}
+    }
+    assert config._load_config_if_exists("")[1] is False
+    assert config._mask_uri("postgres://user:pass@db.example/app") == "postgres://user:***@db.example/app"
+    assert config._mask_map(
+        {
+            "db": {"uri": "postgres://user:pass@db.example/app"},
+            "feature": {"webhook": "https://example.test/hook"},
+        },
+        ["uri"],
+    ) == {
+        "db": {"uri": "***"},
+        "feature": {"webhook": "https://example.test/hook"},
+    }

@@ -26,7 +26,7 @@ class BaseError(Exception):
 
 
 @dataclass(slots=True)
-class ErrWrapper(Exception):
+class WrapperValidationError(Exception):
     code: int
     msg: str
     data: Any = None
@@ -38,7 +38,7 @@ class ErrWrapper(Exception):
 
 
 @dataclass(slots=True)
-class ErrHttp(Exception):
+class HTTPValidationError(Exception):
     status_code: int
     body: bytes = b""
 
@@ -49,7 +49,7 @@ class ErrHttp(Exception):
 
 
 @dataclass(slots=True)
-class ErrCall(Exception):
+class UpstreamCallError(Exception):
     url: str
     request_id: str
     method: str
@@ -92,11 +92,16 @@ def new_validate_error(msg: str = "", items: list[ValidateErrItem] | None = None
 
 def is_err_code(code: int, err: BaseException | None) -> bool:
     cur = err
-    while cur is not None:
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
         if isinstance(cur, BaseError) and cur.code == code:
             return True
-        if isinstance(cur, ErrWrapper) and cur.code == code:
+        if isinstance(cur, WrapperValidationError) and cur.code == code:
             return True
+        if isinstance(cur, UpstreamCallError) and isinstance(cur.src_err, BaseException):
+            cur = cur.src_err
+            continue
         cur = cur.__cause__ or cur.__context__
     return False
 
@@ -108,7 +113,7 @@ class SortPair:
 
 
 @dataclass(slots=True)
-class SortAble:
+class Sortable:
     order_by: str = ""
 
     def get_sort_info(self) -> list[SortPair]:
@@ -120,19 +125,3 @@ class SortAble:
             parts = raw.split()
             pairs.append(SortPair(parts[0], len(parts) > 1 and parts[1] == "desc"))
         return pairs
-
-
-# Go-style aliases.
-ErrCodeInternal = ERR_CODE_INTERNAL
-ErrCodeNotFound = ERR_CODE_NOT_FOUND
-ErrCodeConflict = ERR_CODE_CONFLICT
-ErrCodeValidate = ERR_CODE_VALIDATE
-ErrCodeFriendly = ERR_CODE_FRIENDLY
-ErrNotFound = ERR_NOT_FOUND
-ErrConflict = ERR_CONFLICT
-NewNotFoundError = new_not_found_error
-NewConflictError = new_conflict_error
-NewInternalError = new_internal_error
-NewFriendlyError = new_friendly_error
-NewValidateError = new_validate_error
-IsErrCode = is_err_code

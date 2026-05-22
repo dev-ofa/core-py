@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 DEFAULT_LOCK_TTL = 30.0
 DEFAULT_LOCK_SPIN_INTERVAL = 0.5
-DEFAULT_ELECTION_UNHEALTHY_TIME = 10.0
-DEFAULT_ELECTION_TIMEOUT = 3.0
+DEFAULT_ELECTION_UNHEALTHY_TIME = 5.0
+DEFAULT_ELECTION_TIMEOUT = 2.0
 
 
 @dataclass(slots=True)
@@ -88,4 +88,5 @@ ElectionOptionOp = Callable[[ElectionOption], None]
 class LeaderChangedEvent:
     node_key: str
     is_leader: bool
+    isolation_key: str = ""
     leader_key: str = ""
