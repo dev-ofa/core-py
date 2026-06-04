@@ -29,6 +29,26 @@ class Handler(BaseHTTPRequestHandler):
                 {"code": 12345, "message": "failed", "request_id": "req-3", "data": {"name": "n3"}}
             )
             return
+        if self.path == "/wrapped-error-null-data":
+            self._write_json(
+                {
+                    "code": 10000,
+                    "message": "failed with null",
+                    "request_id": "req-null",
+                    "data": None,
+                }
+            )
+            return
+        if self.path == "/wrapped-ok-null-data":
+            self._write_json(
+                {"code": 0, "message": "ok", "request_id": "req-ok-null", "data": None}
+            )
+            return
+        if self.path == "/wrapped-allowed-null-data":
+            self._write_json(
+                {"code": 10001, "message": "cached", "request_id": "req-allowed-null", "data": None}
+            )
+            return
         body = json.dumps(
             {
                 "trace_id": self.headers.get(httpx.HEADER_TRACE_ID),
@@ -124,6 +144,58 @@ async def test_common_wrapper_rejects_unexpected_code() -> None:
             assert payload == {"name": "n3"}
         else:
             raise AssertionError("expected CallError")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_common_wrapper_rejects_unexpected_code_with_null_data() -> None:
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload: dict[str, Any] = {}
+        with pytest.raises(httpx.CallError) as exc_info:
+            await httpx.get(
+                f"http://127.0.0.1:{server.server_port}/wrapped-error-null-data",
+                httpx.json_resp(payload),
+                httpx.resp_wrapper(httpx.CommonWrapper()),
+            ).do()
+
+        err = exc_info.value.err
+        assert isinstance(err, httpx.WrapperError)
+        assert err.code == 10000
+        assert err.message == "failed with null"
+        assert err.request_id == "req-null"
+        assert err.data is None
+        assert payload == {}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_common_wrapper_allows_null_data_for_success_and_allowed_codes() -> None:
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload: dict[str, Any] = {"existing": "value"}
+        await httpx.get(
+            f"http://127.0.0.1:{server.server_port}/wrapped-ok-null-data",
+            httpx.json_resp(payload),
+            httpx.resp_wrapper(httpx.CommonWrapper()),
+        ).do()
+        assert payload == {"existing": "value"}
+
+        allowed_payload: dict[str, Any] = {"existing": "value"}
+        await httpx.get(
+            f"http://127.0.0.1:{server.server_port}/wrapped-allowed-null-data",
+            httpx.json_resp(allowed_payload),
+            httpx.resp_wrapper(httpx.CommonWrapper(allow_codes=[10001])),
+        ).do()
+        assert allowed_payload == {"existing": "value"}
     finally:
         server.shutdown()
         thread.join(timeout=2)

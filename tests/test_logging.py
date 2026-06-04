@@ -33,8 +33,11 @@ def test_stdout_logger_critical_logs_without_exiting(caplog) -> None:
         with caplog.at_level(py_logging.CRITICAL, logger="core_py_test_logging"):
             logging.StdoutLogger(logger).critical("fatal %s", "boom")
 
-    assert "trace_id: trace-log request_id: req-log" in caplog.text
-    assert "level: FATAL msg: fatal boom" in caplog.text
+    record = caplog.records[-1]
+    assert record.trace_id == "trace-log"
+    assert record.request_id == "req-log"
+    assert record.levelname == "CRITICAL"
+    assert record.getMessage() == "fatal boom"
 
 
 def test_stdout_logger_preserves_explicit_logger_level(caplog) -> None:
@@ -45,9 +48,27 @@ def test_stdout_logger_preserves_explicit_logger_level(caplog) -> None:
     with caplog.at_level(py_logging.DEBUG, logger="core_py_test_logging_debug"):
         logging.StdoutLogger(logger).debug("debug %s", "message")
 
+    record = caplog.records[-1]
     assert logger.level == py_logging.DEBUG
-    assert "level: DEBUG msg: debug message" in caplog.text
-    assert "trace_id: - request_id: -" in caplog.text
+    assert record.trace_id == "-"
+    assert record.request_id == "-"
+    assert record.levelname == "DEBUG"
+    assert record.getMessage() == "debug message"
+
+
+def test_stdout_logger_default_formatter_renders_context_fields(capsys) -> None:
+    logger = py_logging.getLogger("core_py_test_logging_format")
+    logger.handlers.clear()
+    logger.setLevel(py_logging.INFO)
+
+    with context.use_context():
+        context.set_trace_id("trace-format")
+        context.set_request_id("req-format")
+        logging.StdoutLogger(logger).info("hello %s", "world")
+
+    captured = capsys.readouterr()
+    assert "trace_id: trace-format request_id: req-format" in captured.err
+    assert "level: INFO msg: hello world" in captured.err
 
 
 def test_set_logger_and_module_facade_delegate_to_custom_logger() -> None:

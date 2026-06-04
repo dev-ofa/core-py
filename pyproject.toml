@@ -3,7 +3,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "core-py"
+name = "ofa-core-py"
 version = "0.1.0"
 description = "Python implementation of OFA core utilities."
 readme = "README.md"

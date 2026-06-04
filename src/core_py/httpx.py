@@ -154,8 +154,17 @@ class CommonWrapper:
         self.code = int(payload.get("code", 0) or 0)
         self.message = str(payload.get("message", ""))
         self.request_id = str(payload.get("request_id", ""))
-        if "data" in payload:
-            _assign_payload(self.data, payload["data"])
+        if "data" not in payload:
+            return
+        data = payload["data"]
+        if data is None:
+            if self.code != 0:
+                self.data = None
+            return
+        if self.data is None:
+            self.data = data
+            return
+        _assign_payload(self.data, data)
 
     def validate(self) -> None:
         if self.code == 0 or self.code in self.allow_codes:

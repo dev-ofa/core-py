@@ -49,6 +49,18 @@ class AppConfig:
 cfg, meta = config.load(AppConfig, config.Options(required_keys=["db.uri"]))
 ```
 
+## 配置行为
+
+- 不支持热更新，配置变更需要重启进程后生效。
+- 标准配置来源优先级为：默认配置文件 < 环境对应配置文件 < 本地覆盖文件 < 环境变量。
+- 默认配置文件为 `configs/config.yaml`；设置 `ENV=dev` 时，`configs/config.dev.yaml` 会作为环境对应配置文件参与最终配置计算；存在 `configs/config.local.yaml` 时会作为本地覆盖文件参与最终配置计算。
+- `Options.default_config_path` 表示默认基础配置文件路径。显式传入该路径时，当前实现会以该文件作为基础配置来源，并继续在该文件所在目录查找 `config.{env}.yaml` 和 `config.local.yaml`。
+- 环境变量默认使用 `APP` 前缀和 `__` 层级分隔符，例如 `APP__DB__URI` 对应规范路径 `db.uri`。
+- 环境变量名必须使用大写 ASCII 字母、数字与下划线；不符合该规则的环境变量会被忽略。
+- `Options.args` 是 `core-py` 的实现扩展，不属于标准配置来源。当前实现支持 `--group.key=value`，优先级高于环境变量，仅建议用于本地调试、临时诊断和测试场景。
+- 命令行参数不得用于传入密钥、密码、Token 等敏感配置；敏感配置必须来自环境变量或安全存储。
+- 启动日志会记录 `config sources`、脱敏摘要和稳定哈希，用于排查最终配置来源与差异。
+
 ```python
 import asyncio
 

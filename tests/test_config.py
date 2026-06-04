@@ -40,7 +40,8 @@ def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
         "http:\n  port: 8080\ndb:\n  uri: sqlite://default\ndebug: false\n"
     )
     (cfg_dir / "config.local.yaml").write_text("http:\n  port: 8081\n")
-    monkeypatch.setenv("APP.db.uri", "sqlite://env")
+    monkeypatch.setenv("APP__DB__URI", "sqlite://env")
+    monkeypatch.setenv("APP__HTTP__PORT", "9090")
 
     out, meta = config.load(
         AppConfig,
@@ -53,10 +54,10 @@ def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
         ),
     )
 
-    assert out.http.port == 8081
+    assert out.http.port == 9090
     assert out.db.uri == "sqlite://env"
     assert out.debug is True
-    assert meta.sources == ["default", "env", "local", "flags"]
+    assert meta.sources == ["default", "local", "env", "flags"]
     assert meta.summary["db"]["uri"] == "***"
     assert len(meta.hash) == 64
 
@@ -65,6 +66,20 @@ def test_sensitive_file_value_must_be_overridden_by_env(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("db:\n  uri: sqlite://file\n")
     with pytest.raises(ValueError, match="sensitive config"):
+        config.load(
+            dict,
+            config.Options(
+                default_config_path=str(path), sensitive_keys=["uri"], log_enabled=False
+            ),
+        )
+
+
+def test_sensitive_env_placeholder_is_rejected(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text("db:\n  uri: ''\n")
+    monkeypatch.setenv("APP__DB__URI", "******")
+
+    with pytest.raises(ValueError, match="placeholder"):
         config.load(
             dict,
             config.Options(
@@ -151,10 +166,10 @@ def test_load_honors_strict_unknown_field_flag(tmp_path):
 
 
 def test_private_helpers_normalize_and_mask_values(monkeypatch):
-    monkeypatch.setenv("APP.DB.URI", "postgres://env-user:env-pass@db.example/app")
-    monkeypatch.setenv("APP.HTTP.PORT", "8080")
+    monkeypatch.setenv("APP__DB__URI", "postgres://env-user:env-pass@db.example/app")
+    monkeypatch.setenv("APP__HTTP__PORT", "8080")
 
-    assert config._env_to_map("APP", ".") == {
+    assert config._env_to_map("APP", "__") == {
         "db": {"uri": "postgres://env-user:env-pass@db.example/app"},
         "http": {"port": "8080"},
     }
@@ -173,3 +188,11 @@ def test_private_helpers_normalize_and_mask_values(monkeypatch):
         "db": {"uri": "***"},
         "feature": {"webhook": "https://example.test/hook"},
     }
+
+
+def test_env_to_map_ignores_invalid_env_names(monkeypatch):
+    monkeypatch.setenv("APPTEST__HTTP__PORT", "8080")
+    monkeypatch.setenv("APPTEST__db__uri", "sqlite://invalid")
+    monkeypatch.setenv("APPTEST____BROKEN", "invalid")
+
+    assert config._env_to_map("APPTEST", "__") == {"http": {"port": "8080"}}

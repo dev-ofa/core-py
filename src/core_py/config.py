@@ -25,7 +25,7 @@ DEFAULT_SENSITIVE_KEYS = ("password", "passwd", "secret", "token", "key", "uri")
 class Options:
     default_config_path: str = "configs/config.yaml"
     env_prefix: str = "APP"
-    env_separator: str = "."
+    env_separator: str = "__"
     deploy_env_key: str = "ENV"
     args: Sequence[str] | None = None
     required_keys: Sequence[str] = field(default_factory=tuple)
@@ -67,12 +67,6 @@ def load(
         _record_sources(source_map, default_map, "default")
         sources.append("default")
 
-    env_map = _env_to_map(opts.env_prefix, opts.env_separator)
-    if env_map:
-        merged = _merge_maps(merged, _apply_typed_overrides(merged, env_map))
-        _record_sources(source_map, env_map, "env")
-        sources.append("env")
-
     deploy_env = os.getenv(opts.deploy_env_key, "").strip()
     if deploy_env:
         env_file, ok = _load_config_if_exists(str(base_dir / f"config.{deploy_env.lower()}.yaml"))
@@ -86,6 +80,12 @@ def load(
         merged = _merge_maps(merged, local_file)
         _record_sources(source_map, local_file, "local")
         sources.append("local")
+
+    env_map = _env_to_map(opts.env_prefix, opts.env_separator)
+    if env_map:
+        merged = _merge_maps(merged, _apply_typed_overrides(merged, env_map))
+        _record_sources(source_map, env_map, "env")
+        sources.append("env")
 
     flag_map = _args_to_map(args)
     if flag_map:
@@ -101,7 +101,7 @@ def load(
     cfg_hash = _hash_map(merged)
     summary = _mask_map(merged, opts.sensitive_keys)
     if opts.log_enabled:
-        logging.info("config loaded from %s", ",".join(sources))
+        logging.info("config sources: %s", ",".join(sources))
         logging.info("config_hash=%s summary=%s", cfg_hash, json.dumps(summary, sort_keys=True))
 
     decode_model: type[Any] = dict if model is None else model
@@ -171,16 +171,23 @@ def _get_path(data: Mapping[str, Any], nodes: Sequence[str]) -> tuple[Any, bool]
 
 def _env_to_map(prefix: str, sep: str) -> dict[str, Any]:
     ret: dict[str, Any] = {}
-    if not prefix:
+    if not prefix or not sep:
         return ret
     env_prefix = prefix + sep
     for key, value in os.environ.items():
         if not key.startswith(env_prefix):
             continue
+        if not _is_valid_env_name(key):
+            continue
         path = key.removeprefix(env_prefix)
-        if path:
-            _set_path(ret, [p.lower() for p in path.split(sep)], value)
+        nodes = path.split(sep)
+        if path and all(nodes):
+            _set_path(ret, [p.lower() for p in nodes], value)
     return ret
+
+
+def _is_valid_env_name(name: str) -> bool:
+    return bool(name) and all("A" <= ch <= "Z" or "0" <= ch <= "9" or ch == "_" for ch in name)
 
 
 def _args_to_map(args: Sequence[str]) -> dict[str, Any]:
@@ -273,13 +280,26 @@ def _validate_sensitive_sources(
         if (
             _is_sensitive_path(path, sensitive)
             and not _is_empty(value)
-            and sources.get(path) not in {"env", "flags"}
         ):
-            raise ValueError(f"sensitive config {path} must come from env or flags")
+            if sources.get(path) != "env":
+                raise ValueError(f"sensitive config {path} must come from env")
+            if isinstance(value, str) and _is_placeholder(value):
+                raise ValueError(f"sensitive config {path} must not be a placeholder")
 
 
 def _mask_map(data: Mapping[str, Any], sensitive: Sequence[str]) -> dict[str, Any]:
     return {k: _mask_value(k, v, sensitive) for k, v in data.items()}
+
+
+def _is_placeholder(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if not text.strip("*"):
+        return True
+    if "***" in text:
+        return True
+    return text.lower() in {"redacted", "<redacted>", "changeme", "replace_me", "placeholder"}
 
 
 def _mask_value(path: str, value: Any, sensitive: Sequence[str]) -> Any:
