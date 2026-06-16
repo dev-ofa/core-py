@@ -186,7 +186,7 @@ def test_custom_code_error() -> None:
 @pytest.mark.parametrize(
     ("order_by", "expected"),
     [
-        pytest.param("", [], id="空排序"),
+        pytest.param("", [], id="empty-sort"),
         pytest.param(
             "created_at desc, updated_at , score asc",
             [
@@ -194,7 +194,7 @@ def test_custom_code_error() -> None:
                 data.SortPair("updated_at", False),
                 data.SortPair("score", False),
             ],
-            id="解析多字段排序",
+            id="parse-multi-field-sort",
         ),
     ],
 )

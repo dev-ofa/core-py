@@ -280,8 +280,10 @@ def _validate_sensitive_sources(
     for path, value in _flatten_map(data).items():
         if _is_sensitive_path(path, sensitive) and not _is_empty(value):
             if sources.get(path) not in {"env", "local"}:
-                raise data_mod.new_validation_error(f"sensitive config {path} must come from env")
+                raise data_mod.new_validation_error(
                     f"sensitive config {path} must come from env or config.local.yaml"
+                )
+            if _is_placeholder(value):
                 raise data_mod.new_validation_error(
                     f"sensitive config {path} must not be a placeholder"
                 )

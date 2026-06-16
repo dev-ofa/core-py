@@ -287,14 +287,19 @@ async def test_collection_lib_page_query_supports_default_sort_and_explicit_sort
 @pytest.mark.asyncio
 async def test_collection_lib_feed_query_uses_cursor_and_over_fetch() -> None:
     collection = _FakeCollection()
-    collection.insert_one({"_id": "i-1", "name": "alpha"})
-    collection.insert_one({"_id": "i-2", "name": "beta"})
-    collection.insert_one({"_id": "i-3", "name": "gamma"})
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    lib = mongox.CollectionRepository(collection, Item)
     collection.insert_one(
-        {"_id": "i-3", "name": "gamma", "created_at": base + timedelta(seconds=2)}
+        {"_id": "i-1", "name": "alpha", "created_at": base + timedelta(seconds=1)}
     )
     collection.insert_one(
-        {"_id": "i-4", "name": "delta", "created_at": base + timedelta(seconds=3)}
+        {"_id": "i-2", "name": "beta", "created_at": base + timedelta(seconds=2)}
+    )
+    collection.insert_one(
+        {"_id": "i-3", "name": "gamma", "created_at": base + timedelta(seconds=3)}
+    )
+    collection.insert_one(
+        {"_id": "i-4", "name": "delta", "created_at": base + timedelta(seconds=4)}
     )
 
     first_page = await lib.feed_query(
@@ -302,12 +307,13 @@ async def test_collection_lib_feed_query_uses_cursor_and_over_fetch() -> None:
             pager=model.Pager(page_size=2),
             is_descending=True,
             cursor_field="created_at",
+        )
     )
     second_page = await lib.feed_query(
         mongox.FeedQueryInput(
-    assert [row.id for row in first_page.rows] == ["i-3", "i-2"]
-    assert first_page.next_page_token == "i-2"
-    assert [row.id for row in second_page.rows] == ["i-1"]
+            pager=model.Pager(page_size=2, page_token=first_page.next_page_token),
+            is_descending=True,
+            cursor_field="created_at",
         )
     )
 
@@ -338,9 +344,10 @@ async def test_collection_lib_feed_query_parses_int_id_token() -> None:
         )
     )
 
-                is_descending=True,
-            )
-        )
+    assert [row.id for row in first_page.rows] == [3, 2]
+    assert first_page.next_page_token == "2"
+    assert [row.id for row in second_page.rows] == [1]
+    assert second_page.next_page_token == ""
 
 
 @pytest.mark.asyncio
@@ -575,8 +582,11 @@ async def test_collection_lib_without_entity_type_keeps_raw_collection_behavior(
 def _seed_context() -> None:
     context.set_operator("user-1")
     context.set_tenant_id("tenant-1")
+    context.set_app_id("app-1")
 
 def _matches(doc: dict[str, Any], filter_: dict[str, Any]) -> bool:
+    if "$and" in filter_:
+        return all(_matches(doc, item) for item in filter_["$and"])
     if "$or" in filter_:
         return any(_matches(doc, item) for item in filter_["$or"])
     for key, expected in filter_.items():

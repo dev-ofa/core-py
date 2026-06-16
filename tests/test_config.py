@@ -75,7 +75,6 @@ def test_sensitive_default_file_value_must_be_overridden_by_env_or_local(tmp_pat
 
 
 def test_sensitive_local_file_value_is_allowed(tmp_path):
-def test_sensitive_local_file_value_is_rejected(tmp_path):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text("db:\n  uri: ''\n")
@@ -99,7 +98,6 @@ def test_sensitive_local_placeholder_is_rejected(tmp_path):
     (cfg_dir / "config.local.yaml").write_text("db:\n  uri: '******'\n")
 
     with pytest.raises(data.ValidationError, match="placeholder"):
-    with pytest.raises(data.ValidationError, match="sensitive config"):
         config.load(
             dict,
             config.Options(
@@ -160,9 +158,9 @@ def test_load_reads_env_file_and_runs_validators(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        pytest.param(["--debug=maybe"], "expected bool", id="非法布尔值"),
-        pytest.param(["--http.port=oops"], "expected int", id="非法整数"),
-        pytest.param(["--feature.ratio=oops"], "expected float", id="非法浮点数"),
+        pytest.param(["--debug=maybe"], "expected bool", id="invalid-bool"),
+        pytest.param(["--http.port=oops"], "expected int", id="invalid-int"),
+        pytest.param(["--feature.ratio=oops"], "expected float", id="invalid-float"),
     ],
 )
 def test_load_rejects_invalid_scalar_overrides(args, message):

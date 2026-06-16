@@ -25,10 +25,10 @@ from core_py.model.mongox.query import (
     PageQueryInput,
     PatchRawInput,
     feed_cursor_filter,
+    feed_sort_conf,
     merge_feed_filter,
     normalize_feed_cursor_field,
     page_limit_skip,
-    parse_feed_page_token,
     parse_feed_token,
     sort_conf,
 )
