@@ -15,6 +15,7 @@ from typing import Any, TypeVar, Union, cast, get_args, get_origin, overload
 
 import yaml
 
+from core_py import data as data_mod
 from core_py import logging
 
 T = TypeVar("T")
@@ -120,7 +121,7 @@ def _load_config_if_exists(path: str) -> tuple[dict[str, Any], bool]:
     with p.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
-        raise ValueError(f"config file {path} should contain a mapping")
+        raise data_mod.new_validation_error(f"config file {path} should contain a mapping")
     return _normalize_map(raw), True
 
 
@@ -255,7 +256,7 @@ def _validate_required(data: Mapping[str, Any], keys: Sequence[str]) -> None:
     for key in keys:
         value, ok = _get_path(data, key.lower().split("."))
         if not ok or _is_empty(value):
-            raise ValueError(f"missing {key}")
+            raise data_mod.new_validation_error(f"missing {key}")
 
 
 def _is_empty(value: Any) -> bool:
@@ -277,14 +278,13 @@ def _validate_sensitive_sources(
     data: Mapping[str, Any], sources: Mapping[str, str], sensitive: Sequence[str]
 ) -> None:
     for path, value in _flatten_map(data).items():
-        if (
-            _is_sensitive_path(path, sensitive)
-            and not _is_empty(value)
-        ):
-            if sources.get(path) != "env":
-                raise ValueError(f"sensitive config {path} must come from env")
-            if isinstance(value, str) and _is_placeholder(value):
-                raise ValueError(f"sensitive config {path} must not be a placeholder")
+        if _is_sensitive_path(path, sensitive) and not _is_empty(value):
+            if sources.get(path) not in {"env", "local"}:
+                raise data_mod.new_validation_error(f"sensitive config {path} must come from env")
+                    f"sensitive config {path} must come from env or config.local.yaml"
+                raise data_mod.new_validation_error(
+                    f"sensitive config {path} must not be a placeholder"
+                )
 
 
 def _mask_map(data: Mapping[str, Any], sensitive: Sequence[str]) -> dict[str, Any]:
@@ -360,12 +360,14 @@ def _decode_value(tp: Any, value: Any, *, strict: bool) -> Any:
         return None if value is None else _decode_value(args[0], value, strict=strict)
     if isinstance(tp, type) and dataclasses.is_dataclass(tp):
         if not isinstance(value, Mapping):
-            raise ValueError(f"expected mapping for {tp}")
+            raise data_mod.new_validation_error(f"expected mapping for {tp}")
         fields = {f.name: f for f in dataclasses.fields(tp)}
         if strict:
             unknown = set(value) - set(fields)
             if unknown:
-                raise ValueError(f"unknown config fields for {tp.__name__}: {sorted(unknown)}")
+                raise data_mod.new_validation_error(
+                    f"unknown config fields for {tp.__name__}: {sorted(unknown)}"
+                )
         kwargs = {}
         for name, f in fields.items():
             if name in value:
@@ -383,25 +385,27 @@ def _decode_value(tp: Any, value: Any, *, strict: bool) -> Any:
             parsed = _parse_bool(value)
             if parsed is not None:
                 return parsed
-        raise ValueError(f"expected bool, got {value!r}")
+        raise data_mod.new_validation_error(f"expected bool, got {value!r}")
     if tp is int:
         if isinstance(value, bool):
-            raise ValueError(f"expected int, got {value!r}")
+            raise data_mod.new_validation_error(f"expected int, got {value!r}")
         if isinstance(value, int):
             return value
         try:
             return int(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"expected int, got {value!r}") from exc
+            raise data_mod.new_validation_error(f"expected int, got {value!r}", cause=exc) from exc
     if tp is float:
         if isinstance(value, bool):
-            raise ValueError(f"expected float, got {value!r}")
+            raise data_mod.new_validation_error(f"expected float, got {value!r}")
         if isinstance(value, (int, float)):
             return float(value)
         try:
             return float(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"expected float, got {value!r}") from exc
+            raise data_mod.new_validation_error(
+                f"expected float, got {value!r}", cause=exc
+            ) from exc
     try:
         if tp is str and value is not None:
             return tp(value)

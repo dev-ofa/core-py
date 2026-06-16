@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from core_py import context, httpx
+from core_py import context, data, httpx
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -17,7 +17,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/wrapped-ok":
-            self._write_json({"code": 0, "message": "ok", "request_id": "req-1", "data": {"name": "n1"}})
+            self._write_json(
+                {"code": 0, "message": "ok", "request_id": "req-1", "data": {"name": "n1"}}
+            )
             return
         if self.path == "/wrapped-allowed":
             self._write_json(
@@ -73,6 +75,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+
+class RetryableWrapper(httpx.CommonWrapper):
+    def validate(self) -> None:
+        try:
+            super().validate()
+        except Exception as exc:
+            retryable = data.with_retryable_error(exc)
+            if retryable is not None:
+                raise retryable from exc
+            raise
 
 
 @pytest.mark.asyncio
@@ -231,7 +244,6 @@ async def test_wrapper_business_error_is_not_retried_by_default() -> None:
                 httpx.retry(httpx.RetryOpt(attempts=3, base_delay=0.001, max_delay=0.001)),
             ).do()
         assert attempts == 1
-        assert exc.value.app_error is True
         assert isinstance(exc.value.err, httpx.WrapperError)
         assert exc.value.err.code == 30001
     finally:
@@ -240,7 +252,7 @@ async def test_wrapper_business_error_is_not_retried_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retry_app_error_retries_wrapper_business_failure() -> None:
+async def test_retryable_wrapper_error_retries_business_failure() -> None:
     attempts = 0
 
     class RetryHandler(Handler):
@@ -274,11 +286,10 @@ async def test_retry_app_error_retries_wrapper_business_failure() -> None:
         await httpx.get(
             f"http://127.0.0.1:{server.server_port}/wrapped-error",
             httpx.json_resp(payload),
-            httpx.resp_wrapper(httpx.CommonWrapper()),
+            httpx.resp_wrapper(RetryableWrapper()),
             httpx.retry(
                 httpx.RetryOpt(
                     attempts=2,
-                    retry_app_error=True,
                     base_delay=0.001,
                     max_delay=0.001,
                 )
@@ -369,6 +380,7 @@ async def test_service_discovery_preserves_original_host_header() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+
         def resolve(req: httpx.ResolveRequest) -> httpx.ResolveResponse:
             return httpx.ResolveResponse(
                 service_name=req.service_name,
@@ -412,9 +424,13 @@ async def test_instance_override_preserves_original_host_header() -> None:
                 httpx.ServiceOptions(
                     enable_discovery=True,
                     resolver=httpx.resolver_func(
-                        lambda req: (_ for _ in ()).throw(AssertionError("resolver should not be called"))
+                        lambda req: (_ for _ in ()).throw(
+                            AssertionError("resolver should not be called")
+                        )
                     ),
-                    instance_override=httpx.Instance(host="127.0.0.1", port=server.server_port, scheme="http"),
+                    instance_override=httpx.Instance(
+                        host="127.0.0.1", port=server.server_port, scheme="http"
+                    ),
                 )
             ),
             httpx.json_resp(payload),
@@ -427,25 +443,29 @@ async def test_instance_override_preserves_original_host_header() -> None:
 
 
 @pytest.mark.asyncio
-async def test_service_discovery_wraps_resolver_errors() -> None:
+async def test_service_discovery_resolver_errors_are_wrapped_at_agent_boundary() -> None:
     def resolve(req: httpx.ResolveRequest) -> httpx.ResolveResponse:
         del req
         raise ValueError("resolver boom")
 
-    opt = httpx.ServiceOptions(
-        enable_discovery=True,
-        resolver=httpx.resolver_func(resolve),
-    )
+    with pytest.raises(httpx.CallError) as exc:
+        await httpx.get(
+            "http://svc.ns/v1",
+            httpx.service(
+                httpx.ServiceOptions(
+                    enable_discovery=True,
+                    resolver=httpx.resolver_func(resolve),
+                )
+            ),
+        ).do()
 
-    with pytest.raises(RuntimeError, match="service resolve failed") as exc:
-        await httpx.resolve_url("http://svc.ns/v1", opt, "trace-1", "req-1")
-
-    assert isinstance(exc.value.__cause__, ValueError)
-    assert str(exc.value.__cause__) == "resolver boom"
+    assert isinstance(exc.value.err, ValueError)
+    assert str(exc.value.err) == "resolver boom"
+    assert data.code_of(exc.value) == data.ERR_CODE_UNEXPECTED
 
 
 @pytest.mark.asyncio
-async def test_service_discovery_wraps_picker_errors() -> None:
+async def test_resolve_url_returns_picker_errors_without_boundary_wrapping() -> None:
     def resolve(req: httpx.ResolveRequest) -> httpx.ResolveResponse:
         return httpx.ResolveResponse(req.service_name, req.namespace, [])
 
@@ -459,11 +479,11 @@ async def test_service_discovery_wraps_picker_errors() -> None:
         picker=httpx.instance_picker_func(pick),
     )
 
-    with pytest.raises(RuntimeError, match="pick service instance failed") as exc:
+    with pytest.raises(httpx.NoHealthyInstanceError) as exc:
         await httpx.resolve_url("http://svc.ns/v1", opt, "trace-1", "req-1")
 
-    assert isinstance(exc.value.__cause__, httpx.NoHealthyInstanceError)
-    assert str(exc.value.__cause__) == "no instances"
+    assert str(exc.value) == "no instances"
+    assert data.code_of(exc.value) == httpx.ERR_CODE_HTTP_NO_HEALTHY_INSTANCE
 
 
 @pytest.mark.asyncio
@@ -483,14 +503,51 @@ async def test_prepare_phase_errors_are_not_retried() -> None:
 
     agent._prepare_request = wrapped_prepare  # type: ignore[method-assign]
 
-    with pytest.raises(httpx.ServiceDiscoveryDisabledError):
+    with pytest.raises(httpx.CallError) as exc:
         await agent.do()
 
+    assert isinstance(exc.value.err, httpx.ServiceDiscoveryDisabledError)
+    assert data.code_of(exc.value) == httpx.ERR_CODE_HTTP_SERVICE_DISCOVERY_DISABLED
     assert calls == 1
 
 
 @pytest.mark.asyncio
-async def test_http_5xx_retries_for_idempotent_request() -> None:
+async def test_retry_attempts_less_than_one_use_default_attempts() -> None:
+    attempts = 0
+
+    class RetryHandler(Handler):
+        def do_GET(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"temporary"}')
+                return
+            self._write_json({"ok": True})
+
+    server = HTTPServer(("127.0.0.1", 0), RetryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload: dict[str, Any] = {}
+        await httpx.get(
+            f"http://127.0.0.1:{server.server_port}/retry-default",
+            httpx.json_resp(payload),
+            httpx.expected_status_codes([200]),
+            httpx.retry_status_codes([500]),
+            httpx.retry(httpx.RetryOpt(attempts=-1, base_delay=0.001, max_delay=0.001)),
+        ).do()
+        assert attempts == 3
+        assert payload == {"ok": True}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_http_5xx_does_not_retry_without_retryable_marker() -> None:
     attempts = 0
 
     class RetryHandler(Handler):
@@ -510,13 +567,14 @@ async def test_http_5xx_retries_for_idempotent_request() -> None:
     thread.start()
     try:
         payload: dict[str, Any] = {}
-        await httpx.get(
-            f"http://127.0.0.1:{server.server_port}/retry-500",
-            httpx.json_resp(payload),
-            httpx.retry(httpx.RetryOpt(attempts=2, base_delay=0.001, max_delay=0.001)),
-        ).do()
-        assert attempts == 2
-        assert payload == {"ok": True}
+        with pytest.raises(httpx.CallError) as exc:
+            await httpx.get(
+                f"http://127.0.0.1:{server.server_port}/retry-500",
+                httpx.json_resp(payload),
+                httpx.retry(httpx.RetryOpt(attempts=2, base_delay=0.001, max_delay=0.001)),
+            ).do()
+        assert attempts == 1
+        assert isinstance(exc.value.err, httpx.HTTPStatusError)
     finally:
         server.shutdown()
         thread.join(timeout=2)

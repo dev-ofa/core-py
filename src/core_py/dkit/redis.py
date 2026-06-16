@@ -227,7 +227,9 @@ class RedisAtomic:
 
     async def _cleanup_election(self, option: ElectionOption) -> None:
         leader_key = self._leader_key_for(option.isolation_key)
-        await maybe_await(self._client.eval(_DELETE_IF_VALUE_SCRIPT, 1, leader_key, option.node_key))
+        await maybe_await(
+            self._client.eval(_DELETE_IF_VALUE_SCRIPT, 1, leader_key, option.node_key)
+        )
         if option.keep_heartbeat:
             await self._delete_key(self._heartbeat_key_for(option.isolation_key, option.node_key))
 

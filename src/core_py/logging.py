@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging as py_logging
-from typing import Protocol
+from collections.abc import MutableMapping
+from typing import Any, Protocol
 
 from core_py import context
 
@@ -28,8 +29,10 @@ def _request_value() -> str:
     return request_id if ok else "-"
 
 
-class _ContextLoggerAdapter(py_logging.LoggerAdapter):
-    def process(self, msg: object, kwargs: dict[str, object]) -> tuple[object, dict[str, object]]:
+class _ContextLoggerAdapter(py_logging.LoggerAdapter[py_logging.Logger]):
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> tuple[Any, MutableMapping[str, Any]]:
         extra = kwargs.get("extra")
         merged_extra = dict(extra) if isinstance(extra, dict) else {}
         merged_extra.setdefault("trace_id", _trace_value())
@@ -45,7 +48,9 @@ class _ContextFormatter(py_logging.Formatter):
         if not hasattr(record, "request_id"):
             record.request_id = "-"
         if not hasattr(record, "core_py_level"):
-            record.core_py_level = LOG_LEVEL_FATAL if record.levelno == py_logging.CRITICAL else record.levelname
+            record.core_py_level = (
+                LOG_LEVEL_FATAL if record.levelno == py_logging.CRITICAL else record.levelname
+            )
         return super().format(record)
 
 
@@ -94,6 +99,7 @@ def get_logger() -> Logger:
 def set_logger(logger: Logger) -> None:
     global _default_logger
     _default_logger = logger
+
 
 def debug(msg: str, *args: object) -> None:
     _default_logger.debug(msg, *args)

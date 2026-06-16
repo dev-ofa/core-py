@@ -150,6 +150,7 @@ activemq-data/
 # Environments
 .env
 .envrc
+config.local.yaml
 .venv
 env/
 venv/
@@ -202,6 +203,9 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# macOS
+.DS_Store
 
 # Ruff stuff:
 .ruff_cache/

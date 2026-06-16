@@ -3,7 +3,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from core_py import resource
+from core_py import data, resource
 
 
 def test_parse_identifier_extracts_params_and_preserves_source_uri():
@@ -53,7 +53,7 @@ async def test_data_handler_open_and_limits():
 
     with pytest.raises(resource.OpenError) as mismatch:
         await manager.open("ofa-res?media_type=image/png#data:text/plain;base64,aGVsbG8=")
-    assert isinstance(mismatch.value.err, ValueError)
+    assert data.is_err_code(data.ERR_CODE_VALIDATE, mismatch.value.err)
 
     with pytest.raises(resource.OpenError) as too_large:
         await manager.open("ofa-res#data:text/plain," + ("a" * 17))

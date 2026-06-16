@@ -65,12 +65,12 @@ class MongoMutex:
         if current_expires < now:
             result = await maybe_await(
                 self._collection.update_one(
-                {
-                    "_id": self._key,
-                    "expires": current_expires,
-                },
-                {"$set": {"identity": identity, "expires": expires}},
-                upsert=False,
+                    {
+                        "_id": self._key,
+                        "expires": current_expires,
+                    },
+                    {"$set": {"identity": identity, "expires": expires}},
+                    upsert=False,
                 )
             )
             if int(getattr(result, "matched_count", 0)) == 0:
@@ -154,11 +154,11 @@ class MongoAtomic:
             try:
                 await maybe_await(
                     self._random.insert_one(
-                    {
-                        "_id": num,
-                        "expires": now + timedelta(seconds=self._random_lease_seconds),
-                    }
-                )
+                        {
+                            "_id": num,
+                            "expires": now + timedelta(seconds=self._random_lease_seconds),
+                        }
+                    )
                 )
                 return num
             except Exception:
@@ -206,11 +206,11 @@ class MongoAtomic:
         now = _now()
         docs = await maybe_await(
             self._heartbeat_coll.find(
-            {
-                "isolation_key": option.isolation_key,
-                "expires": {"$gt": now},
-            }
-        )
+                {
+                    "isolation_key": option.isolation_key,
+                    "expires": {"$gt": now},
+                }
+            )
         )
         rows = await collect_async_iterable(docs)
         return sorted(str(doc.get("_id", "")) for doc in rows if doc.get("_id"))
@@ -266,9 +266,9 @@ class MongoAtomic:
         if option.keep_heartbeat:
             await maybe_await(
                 self._heartbeat_coll.update_one(
-                {"_id": option.node_key},
-                {"$set": self._heartbeat_doc(option.node_key, option, now)},
-                upsert=True,
+                    {"_id": option.node_key},
+                    {"$set": self._heartbeat_doc(option.node_key, option, now)},
+                    upsert=True,
                 )
             )
 
@@ -278,13 +278,13 @@ class MongoAtomic:
         if leader_alive and leader.get("node_key") == option.node_key:
             await maybe_await(
                 self._election_coll.update_one(
-                {
-                    "_id": leader_id,
-                    "node_key": option.node_key,
-                    "expires": {"$gt": now},
-                },
-                {"$set": self._leader_doc(option, now)},
-                upsert=False,
+                    {
+                        "_id": leader_id,
+                        "node_key": option.node_key,
+                        "expires": {"$gt": now},
+                    },
+                    {"$set": self._leader_doc(option, now)},
+                    upsert=False,
                 )
             )
         elif not leader_alive and (option.can_elect is None or option.can_elect()):
@@ -294,11 +294,15 @@ class MongoAtomic:
 
     async def _cleanup_election(self, option: ElectionOption) -> None:
         await maybe_await(
-            self._election_coll.delete_one({"_id": self._leader_id_for(option), "node_key": option.node_key})
+            self._election_coll.delete_one(
+                {"_id": self._leader_id_for(option), "node_key": option.node_key}
+            )
         )
         if option.keep_heartbeat:
             await maybe_await(
-                self._heartbeat_coll.delete_one({"_id": option.node_key, "isolation_key": option.isolation_key})
+                self._heartbeat_coll.delete_one(
+                    {"_id": option.node_key, "isolation_key": option.isolation_key}
+                )
             )
 
     def _require_election(self) -> ElectionOption:
@@ -381,6 +385,8 @@ class MongoAtomic:
             "isolation_key": option.isolation_key,
             "expires": now + timedelta(seconds=option.unhealthy_time),
         }
+
+
 def _ensure_ttl_index(collection: Any) -> None:
     if collection is None:
         raise InvalidOptionError("dkit: invalid option: mongo collection is nil")
@@ -412,6 +418,8 @@ def _drop_indexes(collection: Any, err: Exception) -> None:
 
 def _is_index_option_conflict(err: Exception) -> bool:
     return int(getattr(err, "code", 0) or 0) == 85
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 

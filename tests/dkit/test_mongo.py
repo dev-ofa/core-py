@@ -249,7 +249,9 @@ async def test_mongo_ttl_indexes_auto_cleanup_expired_mutex_and_heartbeat_docs()
     mutex = atomic.new_mutex("job")
     assert await mutex.try_lock() is True
     await atomic.enable_election(
-        dkit.ElectionOption(node_key="node-a", keep_heartbeat=True, unhealthy_time=0.1, timeout=0.05)
+        dkit.ElectionOption(
+            node_key="node-a", keep_heartbeat=True, unhealthy_time=0.1, timeout=0.05
+        )
     )
     await atomic._stop_election_loop()
 
@@ -278,9 +280,24 @@ async def test_mongo_atomic_uses_core_go_compatible_collections_and_fields() -> 
         dkit.ElectionOption(node_key="node-a", keep_heartbeat=True, isolation_key="tenant")
     )
 
-    assert set(database.collections) >= {"compat_random", "compat_mutex", "compat_elect", "compat_heartbeat"}
-    assert database["compat_random"].find_one({"_id": 0, "expires": {"$gt": datetime.fromtimestamp(0, UTC)}})
-    assert database["compat_mutex"].find_one({"_id": "job", "expires": {"$gt": datetime.fromtimestamp(0, UTC)}})
-    assert database["compat_elect"].find_one({"_id": "leader-tenant", "node_key": "node-a"}) is not None
-    assert database["compat_heartbeat"].find_one({"_id": "node-a", "isolation_key": "tenant"}) is not None
+    assert set(database.collections) >= {
+        "compat_random",
+        "compat_mutex",
+        "compat_elect",
+        "compat_heartbeat",
+    }
+    assert database["compat_random"].find_one(
+        {"_id": 0, "expires": {"$gt": datetime.fromtimestamp(0, UTC)}}
+    )
+    assert database["compat_mutex"].find_one(
+        {"_id": "job", "expires": {"$gt": datetime.fromtimestamp(0, UTC)}}
+    )
+    assert (
+        database["compat_elect"].find_one({"_id": "leader-tenant", "node_key": "node-a"})
+        is not None
+    )
+    assert (
+        database["compat_heartbeat"].find_one({"_id": "node-a", "isolation_key": "tenant"})
+        is not None
+    )
     await atomic.close()

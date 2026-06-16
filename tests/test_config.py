@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from core_py import config
+from core_py import config, data
 
 
 @dataclass
@@ -62,14 +62,50 @@ def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
     assert len(meta.hash) == 64
 
 
-def test_sensitive_file_value_must_be_overridden_by_env(tmp_path):
+def test_sensitive_default_file_value_must_be_overridden_by_env_or_local(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("db:\n  uri: sqlite://file\n")
-    with pytest.raises(ValueError, match="sensitive config"):
+    with pytest.raises(data.ValidationError, match="sensitive config"):
         config.load(
             dict,
             config.Options(
                 default_config_path=str(path), sensitive_keys=["uri"], log_enabled=False
+            ),
+        )
+
+
+def test_sensitive_local_file_value_is_allowed(tmp_path):
+def test_sensitive_local_file_value_is_rejected(tmp_path):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("db:\n  uri: ''\n")
+    (cfg_dir / "config.local.yaml").write_text("db:\n  uri: sqlite://local\n")
+    out, _ = config.load(
+        dict,
+        config.Options(
+            default_config_path=str(cfg_dir / "config.yaml"),
+            sensitive_keys=["uri"],
+            log_enabled=False,
+        ),
+    )
+
+    assert out == {"db": {"uri": "sqlite://local"}}
+
+
+def test_sensitive_local_placeholder_is_rejected(tmp_path):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("db:\n  uri: ''\n")
+    (cfg_dir / "config.local.yaml").write_text("db:\n  uri: '******'\n")
+
+    with pytest.raises(data.ValidationError, match="placeholder"):
+    with pytest.raises(data.ValidationError, match="sensitive config"):
+        config.load(
+            dict,
+            config.Options(
+                default_config_path=str(cfg_dir / "config.yaml"),
+                sensitive_keys=["uri"],
+                log_enabled=False,
             ),
         )
 
@@ -79,7 +115,7 @@ def test_sensitive_env_placeholder_is_rejected(tmp_path, monkeypatch):
     path.write_text("db:\n  uri: ''\n")
     monkeypatch.setenv("APP__DB__URI", "******")
 
-    with pytest.raises(ValueError, match="placeholder"):
+    with pytest.raises(data.ValidationError, match="placeholder"):
         config.load(
             dict,
             config.Options(
@@ -136,7 +172,7 @@ def test_load_rejects_invalid_scalar_overrides(args, message):
         feature: FeatureConfig = field(default_factory=FeatureConfig)
         debug: bool = False
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(data.ValidationError, match=message):
         config.load(
             LocalConfig,
             config.Options(args=args, sensitive_keys=[], log_enabled=False),
@@ -147,7 +183,7 @@ def test_load_honors_strict_unknown_field_flag(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("name: demo\nextra: ignored\n")
 
-    with pytest.raises(ValueError, match="unknown config fields"):
+    with pytest.raises(data.ValidationError, match="unknown config fields"):
         config.load(
             StrictConfig,
             config.Options(default_config_path=str(path), sensitive_keys=[], log_enabled=False),
@@ -177,7 +213,10 @@ def test_private_helpers_normalize_and_mask_values(monkeypatch):
         "feature": {"enabled": "true", "ratio": "0.8"}
     }
     assert config._load_config_if_exists("")[1] is False
-    assert config._mask_uri("postgres://user:pass@db.example/app") == "postgres://user:***@db.example/app"
+    assert (
+        config._mask_uri("postgres://user:pass@db.example/app")
+        == "postgres://user:***@db.example/app"
+    )
     assert config._mask_map(
         {
             "db": {"uri": "postgres://user:pass@db.example/app"},

@@ -18,7 +18,7 @@ from typing import Any, Protocol, TypeAlias
 
 import httpx as _httpx_lib
 
-from core_py import context, logging, trace
+from core_py import context, data, logging, trace
 from core_py._async import AsyncReadable, ensure_async_readable, maybe_await
 
 HEADER_TRACE_ID = trace.HEADER_TRACE_ID
@@ -33,17 +33,25 @@ DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_BASE = 0.1
 DEFAULT_RETRY_MAX_DELAY = 1.0
 
-
-class TimeoutBudgetExhaustedError(Exception):
-    pass
-
-
-class NoHealthyInstanceError(Exception):
-    pass
+ERR_CODE_HTTP_TIMEOUT_BUDGET_EXHAUSTED = 10110
+ERR_CODE_HTTP_NO_HEALTHY_INSTANCE = 10111
+ERR_CODE_HTTP_SERVICE_DISCOVERY_DISABLED = 20110
+ERR_CODE_HTTP_WRAPPER_DEFAULT = data.ERR_CODE_EXPECTED
 
 
-class ServiceDiscoveryDisabledError(Exception):
-    pass
+class TimeoutBudgetExhaustedError(data.Error):
+    def __init__(self, message: str = "httpx: timeout budget exhausted") -> None:
+        super().__init__(ERR_CODE_HTTP_TIMEOUT_BUDGET_EXHAUSTED, message)
+
+
+class NoHealthyInstanceError(data.Error):
+    def __init__(self, message: str = "httpx: no healthy service instance") -> None:
+        super().__init__(ERR_CODE_HTTP_NO_HEALTHY_INSTANCE, message)
+
+
+class ServiceDiscoveryDisabledError(data.Error):
+    def __init__(self, message: str = "httpx: service discovery is disabled") -> None:
+        super().__init__(ERR_CODE_HTTP_SERVICE_DISCOVERY_DISABLED, message)
 
 
 ERR_TIMEOUT_BUDGET_EXHAUSTED = TimeoutBudgetExhaustedError("httpx: timeout budget exhausted")
@@ -53,12 +61,19 @@ ERR_SERVICE_DISCOVERY_DISABLED = ServiceDiscoveryDisabledError(
 )
 
 
-@dataclass(slots=True)
-class HTTPStatusError(Exception):
-    status_code: int
-    expected_status_codes: list[int]
-    body: bytes = b""
-    read_body_err: Exception | None = None
+class HTTPStatusError(data.HTTPValidationError):
+    __slots__ = ("expected_status_codes", "read_body_err")
+
+    def __init__(
+        self,
+        status_code: int,
+        expected_status_codes: list[int],
+        body: bytes = b"",
+        read_body_err: Exception | None = None,
+    ) -> None:
+        super().__init__(status_code, body)
+        self.expected_status_codes = expected_status_codes
+        self.read_body_err = read_body_err
 
     def __str__(self) -> str:
         if self.read_body_err:
@@ -66,14 +81,22 @@ class HTTPStatusError(Exception):
         return f"http status {self.status_code} is not expected({self.expected_status_codes}), body: {self.body.decode(errors='replace')}"
 
 
-@dataclass(slots=True)
-class CallError(Exception):
-    method: str
-    url: str
-    request_id: str
-    err: Exception
-    status_code: int = 0
-    app_error: bool = False
+class CallError(data.UpstreamError):
+    __slots__ = ("method", "url", "err", "status_code")
+
+    def __init__(
+        self,
+        method: str,
+        url: str,
+        request_id: str,
+        err: Exception,
+        status_code: int = 0,
+    ) -> None:
+        super().__init__(url, method, request_id, err)
+        self.method = method
+        self.url = url
+        self.err = _compat_error(err)
+        self.status_code = status_code
 
     def __str__(self) -> str:
         if self.status_code:
@@ -126,15 +149,28 @@ class Wrapper(Protocol):
     def validate(self) -> None: ...
 
 
-@dataclass(slots=True)
-class WrapperError(Exception):
-    code: int
-    message: str
-    request_id: str = ""
-    data: Any = None
+class WrapperError(data.Error):
+    __slots__ = ("request_id", "data")
+
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        request_id: str = "",
+        data: Any = None,
+    ) -> None:
+        if not code:
+            code = ERR_CODE_HTTP_WRAPPER_DEFAULT
+        if not message:
+            message = "httpx wrapper validate failed"
+        super().__init__(code, message)
+        self.request_id = request_id
+        self.data = data
 
     def __str__(self) -> str:
-        return "httpx wrapper validate failed"
+        if self.request_id:
+            return f"httpx wrapper validate failed code={self.code} request_id={self.request_id}: {self.message}"
+        return f"httpx wrapper validate failed code={self.code}: {self.message}"
 
 
 @dataclass(slots=True)
@@ -169,7 +205,12 @@ class CommonWrapper:
     def validate(self) -> None:
         if self.code == 0 or self.code in self.allow_codes:
             return
-        raise WrapperError(self.code, self.message, self.request_id, self.data)
+        err = WrapperError(self.code, self.message, self.request_id, self.data)
+        if self.data is not None:
+            with_data = data.with_error_data(err, self.data)
+            if with_data is not None:
+                raise with_data
+        raise err
 
 
 class RespHandler(Protocol):
@@ -185,7 +226,6 @@ AgentOp = Callable[["Agent"], None]
 class RetryOpt:
     max_delay: float = DEFAULT_RETRY_MAX_DELAY
     base_delay: float = DEFAULT_RETRY_BASE
-    retry_app_error: bool = False
     attempts: int = DEFAULT_RETRY_ATTEMPTS
     idempotent: bool = False
 
@@ -255,7 +295,9 @@ class ResolverFunc:
 
 
 class InstancePicker(Protocol):
-    def pick(self, req: ResolveRequest, resp: ResolveResponse) -> Instance | Awaitable[Instance]: ...
+    def pick(
+        self, req: ResolveRequest, resp: ResolveResponse
+    ) -> Instance | Awaitable[Instance]: ...
 
 
 InstancePickerCallable = Callable[[ResolveRequest, ResolveResponse], Instance]
@@ -371,7 +413,7 @@ class HybridHandler:
         for idx, pred in enumerate(self.predicates):
             if pred.predicate(resp):
                 if pred.resp_handler is None:
-                    raise ValueError(f"hybrid resp handler is nil at {idx}")
+                    raise data.new_validation_error(f"hybrid resp handler is nil at {idx}")
                 await maybe_await(pred.resp_handler.handle_response(resp, resp_wrapper))
                 return
 
@@ -387,6 +429,7 @@ class Agent:
         self.resp_handler: RespHandler | None = None
         self.resp_wrapper: Wrapper | None = None
         self.expected_status_codes: list[int] = []
+        self.retry_status_codes: list[int] = []
         self.retry_opt: RetryOpt | None = None
         self.timeout_quota = DEFAULT_TIMEOUT_QUOTA
         self.redirect_limit: int | None = None
@@ -410,11 +453,14 @@ class Agent:
             self._deadline = self._init_deadline()
 
     async def do(self) -> None:
-        await self.init()
+        try:
+            await self.init()
+        except Exception as exc:
+            raise CallError(self.method, self.url, "", exc) from exc
         if not self.retry_opt:
             await self._do_http()
             return
-        attempts = self.retry_opt.attempts or DEFAULT_RETRY_ATTEMPTS
+        attempts = self._retry_attempts()
         if not self._can_retry_method():
             attempts = 1
         last_err: Exception | None = None
@@ -434,10 +480,13 @@ class Agent:
             raise last_err
 
     async def do_stream(self) -> StreamResponse:
-        await self.init()
+        try:
+            await self.init()
+        except Exception as exc:
+            raise CallError(self.method, self.url, "", exc) from exc
         if not self.retry_opt:
             return await self._do_http_stream()
-        attempts = self.retry_opt.attempts or DEFAULT_RETRY_ATTEMPTS
+        attempts = self._retry_attempts()
         if not self._can_retry_method():
             attempts = 1
         last_err: Exception | None = None
@@ -454,7 +503,12 @@ class Agent:
                 await asyncio.sleep(delay)
         if last_err:
             raise last_err
-        raise RuntimeError("httpx stream call failed")
+        raise CallError(self.method, self.url, "", RuntimeError("httpx stream call failed"))
+
+    def _retry_attempts(self) -> int:
+        if self.retry_opt is None or self.retry_opt.attempts <= 0:
+            return DEFAULT_RETRY_ATTEMPTS
+        return self.retry_opt.attempts
 
     async def _prepare_request(self) -> tuple[PreparedRequest, str]:
         if self._deadline and self._deadline <= time.time():
@@ -475,37 +529,48 @@ class Agent:
 
     async def _do_http(self) -> None:
         with context.use_context():
-            req, request_id = await self._prepare_request()
+            req: PreparedRequest | None = None
+            request_id = ""
             start = time.time()
-            logging.info(
-                "httpx request start method=%s path=%s", req.method, urllib.parse.urlparse(req.url).path
-            )
             try:
+                req, request_id = await self._prepare_request()
+                logging.info(
+                    "httpx request start method=%s path=%s",
+                    req.method,
+                    urllib.parse.urlparse(req.url).path,
+                )
                 resp = await self._send_request(req)
-            except Exception as exc:
-                err = CallError(req.method, req.url, request_id, exc)
-                self._log_end(req, 0, start, err)
-                raise err from exc
-            if resp.status_code not in self.expected_status_codes:
-                status_err = HTTPStatusError(resp.status_code, self.expected_status_codes, resp.body)
-                err = CallError(req.method, req.url, request_id, status_err, resp.status_code)
-                self._log_end(req, resp.status_code, start, err)
-                raise err from status_err
-            if self.resp_handler:
-                try:
-                    await maybe_await(self.resp_handler.handle_response(resp, self.resp_wrapper))
-                except Exception as exc:
-                    err = CallError(
-                        req.method,
-                        req.url,
-                        request_id,
-                        exc,
-                        resp.status_code,
-                        app_error=True,
+                if resp.status_code not in self.expected_status_codes:
+                    status_err = HTTPStatusError(
+                        resp.status_code, self.expected_status_codes, resp.body
                     )
-                    self._log_end(req, resp.status_code, start, err)
-                    raise err from exc
-            self._log_end(req, resp.status_code, start, None)
+                    if resp.status_code in self.retry_status_codes:
+                        retryable = data.with_retryable_error(status_err)
+                        if retryable is not None:
+                            raise retryable from status_err
+                    raise status_err
+                if self.resp_handler:
+                    await maybe_await(self.resp_handler.handle_response(resp, self.resp_wrapper))
+                self._log_end(req, resp.status_code, start, None)
+            except Exception as exc:
+                err: Exception = exc
+                if _is_retryable_network_error(exc):
+                    retryable = data.with_retryable_error(exc)
+                    if retryable is not None:
+                        err = retryable
+                status_code = getattr(resp, "status_code", 0) if "resp" in locals() else 0
+                method = req.method if req is not None else self.method
+                url = req.url if req is not None else self.url
+                wrapped = CallError(
+                    method,
+                    url,
+                    request_id,
+                    err,
+                    status_code,
+                )
+                if req is not None:
+                    self._log_end(req, status_code, start, wrapped)
+                raise wrapped from exc
 
     def _log_end(
         self, req: PreparedRequest, status_code: int, start: float, err: Exception | None
@@ -520,15 +585,16 @@ class Agent:
                 status_code,
                 duration_ms,
             )
-        else:
-            logging.error(
-                "httpx request end method=%s path=%s status_code=%d duration_ms=%d error=%s",
-                req.method,
-                path,
-                status_code,
-                duration_ms,
-                err,
-            )
+            return
+        log = logging.warning if data.is_expected(err) else logging.error
+        log(
+            "httpx request end method=%s path=%s status_code=%d duration_ms=%d error=%s",
+            req.method,
+            path,
+            status_code,
+            duration_ms,
+            err,
+        )
 
     async def _send_request(self, req: PreparedRequest) -> Response:
         if self._opener is not None:
@@ -606,27 +672,42 @@ class Agent:
 
     async def _do_http_stream(self) -> StreamResponse:
         with context.use_context():
-            req, request_id = await self._prepare_request()
+            req: PreparedRequest | None = None
+            request_id = ""
             start = time.time()
-            logging.info(
-                "httpx request start method=%s path=%s", req.method, urllib.parse.urlparse(req.url).path
-            )
             try:
+                req, request_id = await self._prepare_request()
+                logging.info(
+                    "httpx request start method=%s path=%s",
+                    req.method,
+                    urllib.parse.urlparse(req.url).path,
+                )
                 response = await self._open_stream(req)
+                status_code = response.status_code
+                if status_code not in self.expected_status_codes:
+                    body = await response.body.read()
+                    await response.close()
+                    status_err = HTTPStatusError(status_code, self.expected_status_codes, body)
+                    if status_code in self.retry_status_codes:
+                        retryable = data.with_retryable_error(status_err)
+                        if retryable is not None:
+                            raise retryable from status_err
+                    raise status_err
+                self._log_end(req, status_code, start, None)
+                return response
             except Exception as exc:
-                err = CallError(req.method, req.url, request_id, exc)
-                self._log_end(req, 0, start, err)
-                raise err from exc
-            status_code = response.status_code
-            if status_code not in self.expected_status_codes:
-                body = await response.body.read()
-                await response.close()
-                status_err = HTTPStatusError(status_code, self.expected_status_codes, body)
-                err = CallError(req.method, req.url, request_id, status_err, status_code)
-                self._log_end(req, status_code, start, err)
-                raise err from status_err
-            self._log_end(req, status_code, start, None)
-            return response
+                err: Exception = exc
+                if _is_retryable_network_error(exc):
+                    retryable = data.with_retryable_error(exc)
+                    if retryable is not None:
+                        err = retryable
+                status_code = response.status_code if "response" in locals() else 0
+                method = req.method if req is not None else self.method
+                url = req.url if req is not None else self.url
+                wrapped = CallError(method, url, request_id, err, status_code)
+                if req is not None:
+                    self._log_end(req, status_code, start, wrapped)
+                raise wrapped from exc
 
     def _can_retry_method(self) -> bool:
         return bool(self.retry_opt and self.retry_opt.idempotent) or self.method in {
@@ -636,13 +717,7 @@ class Agent:
         }
 
     def _should_retry(self, err: Exception) -> bool:
-        if isinstance(err, CallError):
-            if err.app_error:
-                return bool(self.retry_opt and self.retry_opt.retry_app_error)
-            if isinstance(err.err, HTTPStatusError):
-                return err.err.status_code >= 500
-            return _is_retryable_network_error(err.err)
-        return False
+        return data.is_retryable_error(err)
 
     def _retry_delay(self, attempt: int) -> float:
         opt = self.retry_opt or RetryOpt()
@@ -674,7 +749,15 @@ def _assign_payload(target: Any, payload: Any) -> None:
         for k, v in payload.items():
             setattr(target, k, v)
     else:
-        raise ValueError("unsupported response target")
+        raise data.new_validation_error("unsupported response target")
+
+
+def _compat_error(err: Exception) -> Exception:
+    if isinstance(err, (data.ExtraDataError, data.RetryableError)) and isinstance(
+        err.cause, Exception
+    ):
+        return err.cause
+    return err
 
 
 @dataclass(slots=True)
@@ -705,7 +788,10 @@ async def _read_response_body(response: Any) -> bytes:
 
 
 def _header_dict(headers: Mapping[str, str] | Message[str, str]) -> dict[str, str]:
-    return {"-".join(part.capitalize() for part in key.split("-")): value for key, value in headers.items()}
+    return {
+        "-".join(part.capitalize() for part in key.split("-")): value
+        for key, value in headers.items()
+    }
 
 
 def ensure_trace_context() -> str:
@@ -796,7 +882,7 @@ async def resolve_url(original: str, opt: ServiceOptions, trace_id: str, request
     if not service_name:
         service_name, namespace = _parse_service_identifier(parsed.hostname or "", namespace)
     if not service_name or not namespace:
-        raise ValueError("service discovery requires service name and namespace")
+        raise data.new_validation_error("service discovery requires service name and namespace")
     req = ResolveRequest(
         service_name,
         namespace,
@@ -807,15 +893,9 @@ async def resolve_url(original: str, opt: ServiceOptions, trace_id: str, request
         request_id,
         trace_id,
     )
-    try:
-        resp = await maybe_await(opt.resolver.resolve(req))
-    except Exception as exc:
-        raise RuntimeError("service resolve failed") from exc
+    resp = await maybe_await(opt.resolver.resolve(req))
     picker = opt.picker or RandomPicker()
-    try:
-        inst = await maybe_await(picker.pick(req, resp))
-    except Exception as exc:
-        raise RuntimeError("pick service instance failed") from exc
+    inst = await maybe_await(picker.pick(req, resp))
     return _rewrite_url_to_instance(original, inst)
 
 
@@ -883,6 +963,13 @@ def retry(opt: RetryOpt | None = None) -> AgentOp:
 def expected_status_codes(codes: list[int]) -> AgentOp:
     def op(agent: Agent) -> None:
         agent.expected_status_codes = list(codes)
+
+    return op
+
+
+def retry_status_codes(codes: list[int]) -> AgentOp:
+    def op(agent: Agent) -> None:
+        agent.retry_status_codes = list(codes)
 
     return op
 

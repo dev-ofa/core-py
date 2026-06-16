@@ -191,7 +191,9 @@ async def test_redis_election_heartbeat_supports_subsecond_unhealthy_time() -> N
     client = FakeRedis()
     atomic = dkit.RedisAtomic(client, key_prefix="hb-ttl")
     await atomic.enable_election(
-        dkit.ElectionOption(node_key="node-a", keep_heartbeat=True, unhealthy_time=0.2, timeout=0.05)
+        dkit.ElectionOption(
+            node_key="node-a", keep_heartbeat=True, unhealthy_time=0.2, timeout=0.05
+        )
     )
 
     assert await atomic.is_alive("node-a") is True

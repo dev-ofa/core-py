@@ -58,7 +58,7 @@ cfg, meta = config.load(AppConfig, config.Options(required_keys=["db.uri"]))
 - 环境变量默认使用 `APP` 前缀和 `__` 层级分隔符，例如 `APP__DB__URI` 对应规范路径 `db.uri`。
 - 环境变量名必须使用大写 ASCII 字母、数字与下划线；不符合该规则的环境变量会被忽略。
 - `Options.args` 是 `core-py` 的实现扩展，不属于标准配置来源。当前实现支持 `--group.key=value`，优先级高于环境变量，仅建议用于本地调试、临时诊断和测试场景。
-- 命令行参数不得用于传入密钥、密码、Token 等敏感配置；敏感配置必须来自环境变量或安全存储。
+- 命令行参数不得用于传入密钥、密码、Token 等敏感配置；共享环境中的敏感配置必须来自环境变量或安全存储，本地开发允许通过 `config.local.yaml` 提供敏感配置。
 - 启动日志会记录 `config sources`、脱敏摘要和稳定哈希，用于排查最终配置来源与差异。
 
 ```python
@@ -105,7 +105,7 @@ async def main() -> None:
     kit = await dkit.new_default_kit(atomic)
 
     async def critical_section() -> None:
-        print(kit.get_id_string())
+        print(kit.get_snowflake_id())
 
     await kit.mutex_do("job", critical_section)
     await atomic.close()

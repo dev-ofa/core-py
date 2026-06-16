@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 import aiofiles  # type: ignore[import-untyped]
 
-from core_py import httpx
+from core_py import data, httpx
 from core_py._async import AsyncReadable, ensure_async_readable, maybe_await
 
 DEFAULT_MAX_BYTES = 32 << 20
@@ -35,29 +35,41 @@ DEFAULT_RETRY_MAX_DELAY = 1.0
 _PARAM_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9_+.-]*$")
 
+ERR_CODE_RESOURCE_UNSUPPORTED_SCHEME = 20200
+ERR_CODE_RESOURCE_OPEN_UNSUPPORTED = 20201
+ERR_CODE_RESOURCE_UPLOAD_UNSUPPORTED = 20202
+ERR_CODE_RESOURCE_SIZE_LIMIT_EXCEEDED = 20203
+ERR_CODE_RESOURCE_TIMEOUT_BUDGET_EXHAUSTED = 10120
 
-class ResourceError(Exception):
-    pass
+
+class ResourceError(data.Error):
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(code, message)
 
 
 class UnsupportedSchemeError(ResourceError):
-    pass
+    def __init__(self, message: str = "resource: unsupported scheme") -> None:
+        super().__init__(ERR_CODE_RESOURCE_UNSUPPORTED_SCHEME, message)
 
 
 class OpenUnsupportedError(ResourceError):
-    pass
+    def __init__(self, message: str = "resource: open unsupported") -> None:
+        super().__init__(ERR_CODE_RESOURCE_OPEN_UNSUPPORTED, message)
 
 
 class UploadUnsupportedError(ResourceError):
-    pass
+    def __init__(self, message: str = "resource: upload unsupported") -> None:
+        super().__init__(ERR_CODE_RESOURCE_UPLOAD_UNSUPPORTED, message)
 
 
 class SizeLimitExceededError(ResourceError):
-    pass
+    def __init__(self, message: str = "resource: size limit exceeded") -> None:
+        super().__init__(ERR_CODE_RESOURCE_SIZE_LIMIT_EXCEEDED, message)
 
 
 class TimeoutBudgetExhaustedError(ResourceError):
-    pass
+    def __init__(self, message: str = "resource: timeout budget exhausted") -> None:
+        super().__init__(ERR_CODE_RESOURCE_TIMEOUT_BUDGET_EXHAUSTED, message)
 
 
 ERR_UNSUPPORTED_SCHEME = UnsupportedSchemeError("resource: unsupported scheme")
@@ -67,49 +79,56 @@ ERR_SIZE_LIMIT_EXCEEDED = SizeLimitExceededError("resource: size limit exceeded"
 ERR_TIMEOUT_BUDGET_EXHAUSTED = TimeoutBudgetExhaustedError("resource: timeout budget exhausted")
 
 
-@dataclass(slots=True)
-class ParseError(ResourceError):
-    raw: str
-    err: Exception
+class ParseError(Exception):
+    __slots__ = ("raw", "err")
+
+    def __init__(self, raw: str, err: Exception) -> None:
+        super().__init__("resource parse failed")
+        self.raw = raw
+        self.err = err
+        self.__cause__ = err
 
     def __str__(self) -> str:
         return f"resource parse failed: {self.err}"
 
 
-@dataclass(slots=True)
-class OpenError(ResourceError):
-    identifier: Identifier
-    err: Exception
+class OpenError(Exception):
+    __slots__ = ("identifier", "err")
+
+    def __init__(self, identifier: Identifier, err: Exception) -> None:
+        super().__init__("resource open failed")
+        self.identifier = identifier
+        self.err = err
+        self.__cause__ = err
 
     def __str__(self) -> str:
         return f"resource open scheme={self.identifier.scheme} failed: {self.err}"
 
 
-@dataclass(slots=True)
-class DownloadError(ResourceError):
-    dst_path: str
-    err: Exception
+class DownloadError(Exception):
+    __slots__ = ("dst_path", "err")
+
+    def __init__(self, dst_path: str, err: Exception) -> None:
+        super().__init__("resource download failed")
+        self.dst_path = dst_path
+        self.err = err
+        self.__cause__ = err
 
     def __str__(self) -> str:
         return f"resource download dst={self.dst_path} failed: {self.err}"
 
 
-@dataclass(slots=True)
-class UploadError(ResourceError):
-    scheme: str
-    err: Exception
+class UploadError(Exception):
+    __slots__ = ("scheme", "err")
+
+    def __init__(self, scheme: str, err: Exception) -> None:
+        super().__init__("resource upload failed")
+        self.scheme = scheme
+        self.err = err
+        self.__cause__ = err
 
     def __str__(self) -> str:
         return f"resource upload scheme={self.scheme} failed: {self.err}"
-
-
-@dataclass(slots=True)
-class HTTPStatusError(ResourceError):
-    status_code: int
-    body: bytes = b""
-
-    def __str__(self) -> str:
-        return f"http status {self.status_code} is not expected, body: {self.body.decode(errors='replace')}"
 
 
 @dataclass(slots=True)
@@ -274,9 +293,9 @@ class Manager:
 
     def register(self, scheme: str, handler: ResourceHandler) -> None:
         if handler is None:
-            raise ValueError("handler is nil")
+            raise data.new_validation_error("handler is nil")
         if not scheme or scheme.lower() != scheme or not _SCHEME_RE.fullmatch(scheme):
-            raise ValueError(f"invalid scheme {scheme!r}")
+            raise data.new_validation_error(f"invalid scheme {scheme!r}")
         self._handlers[scheme] = handler
 
     async def open(self, raw: str) -> Stream:
@@ -287,17 +306,17 @@ class Manager:
         except Exception as exc:
             raise OpenError(identifier, exc) from exc
         if stream is None or stream.body is None:
-            raise OpenError(identifier, ValueError("handler returned empty stream"))
+            raise OpenError(identifier, data.new_validation_error("handler returned empty stream"))
         return stream
 
     async def download(self, raw: str, dst_path: str) -> None:
         if not dst_path:
-            raise DownloadError(dst_path, ValueError("dst_path is empty"))
+            raise DownloadError(dst_path, data.new_validation_error("dst_path is empty"))
         try:
             stream = await self.open(raw)
             parent = os.path.dirname(dst_path) or "."
             if not os.path.isdir(parent):
-                raise ValueError("destination parent is not a directory")
+                raise data.new_validation_error("destination parent is not a directory")
             fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{os.path.basename(dst_path)}.tmp-", dir=parent
             )
@@ -327,7 +346,7 @@ class Manager:
 
     async def upload(self, scheme: str, value: UploadInput) -> Identifier:
         if not scheme or scheme.lower() != scheme or not _SCHEME_RE.fullmatch(scheme):
-            raise UploadError(scheme, ValueError(f"invalid scheme {scheme!r}"))
+            raise UploadError(scheme, data.new_validation_error(f"invalid scheme {scheme!r}"))
         try:
             handler = self._handler(scheme)
             return await maybe_await(handler.upload(value))
@@ -389,13 +408,13 @@ def _parse_params(meta: str, raw: str) -> dict[str, str]:
     try:
         values = urllib.parse.parse_qs(query, keep_blank_values=True, strict_parsing=False)
     except ValueError as exc:
-        raise ParseError(raw, ValueError(f"parse params: {exc}")) from exc
+        raise ParseError(raw, data.new_validation_error("parse params", cause=exc)) from exc
     params: dict[str, str] = {}
     for key, vals in values.items():
         if not _PARAM_NAME_RE.fullmatch(key):
-            raise ParseError(raw, ValueError(f"invalid param name {key!r}"))
+            raise ParseError(raw, data.new_validation_error(f"invalid param name {key!r}"))
         if len(vals) != 1:
-            raise ParseError(raw, ValueError(f"duplicate param {key!r}"))
+            raise ParseError(raw, data.new_validation_error(f"duplicate param {key!r}"))
         params[key] = vals[0]
     return params
 
@@ -403,11 +422,11 @@ def _parse_params(meta: str, raw: str) -> dict[str, str]:
 def _source_scheme(source_uri: str) -> str:
     scheme, found, _ = source_uri.partition(":")
     if not found or not scheme:
-        raise ValueError("source_uri scheme is required")
+        raise data.new_validation_error("source_uri scheme is required")
     if not _SCHEME_RE.fullmatch(scheme):
-        raise ValueError(f"invalid source_uri scheme {scheme!r}")
+        raise data.new_validation_error(f"invalid source_uri scheme {scheme!r}")
     if scheme.lower() != scheme:
-        raise ValueError("source_uri scheme must be lowercase")
+        raise data.new_validation_error("source_uri scheme must be lowercase")
     return scheme
 
 
@@ -416,13 +435,13 @@ def _validate_identifier_params(params: Mapping[str, str]) -> None:
     if not filename:
         return
     if "/" in filename or "\\" in filename or "\x00" in filename or ".." in filename:
-        raise ValueError("invalid filename")
+        raise data.new_validation_error("invalid filename")
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in filename):
-        raise ValueError("invalid filename")
+        raise data.new_validation_error("invalid filename")
 
 
 def _parse_error(raw: str, msg: str) -> ParseError:
-    return ParseError(raw, ValueError(msg))
+    return ParseError(raw, data.new_validation_error(msg))
 
 
 class _DataHandler:
@@ -436,7 +455,7 @@ class _DataHandler:
             and media_type
             and not _same_media_type(identifier.media_type, media_type)
         ):
-            raise ValueError(
+            raise data.new_validation_error(
                 f"data media type {media_type!r} does not match identifier media_type {identifier.media_type!r}"
             )
         if self.max_bytes > 0 and len(body) > self.max_bytes:
@@ -456,10 +475,10 @@ class _DataHandler:
 
 def _parse_data_url(raw: str) -> tuple[str, bytes]:
     if not raw.startswith("data:"):
-        raise ValueError("invalid data URL")
+        raise data.new_validation_error("invalid data URL")
     meta, found, payload = raw[len("data:") :].partition(",")
     if not found:
-        raise ValueError("invalid data URL payload")
+        raise data.new_validation_error("invalid data URL payload")
     parts = meta.split(";")
     media_type = parts[0] or "text/plain;charset=US-ASCII"
     is_base64 = any(part.lower() == "base64" for part in parts[1:])
@@ -482,6 +501,7 @@ class _HTTPHandler:
         ops = [
             httpx.timeout_quota(self.timeout_quota),
             httpx.expected_status_codes(list(_success_status_codes())),
+            httpx.retry_status_codes(list(_server_error_status_codes())),
             httpx.max_redirects(self.redirect_limit),
             httpx.retry(
                 httpx.RetryOpt(
@@ -585,3 +605,7 @@ def _same_media_type(a: str, b: str) -> bool:
 
 def _success_status_codes() -> set[int]:
     return {200, 201, 202, 203, 204, 205, 206, 207, 208, 226}
+
+
+def _server_error_status_codes() -> set[int]:
+    return set(range(500, 512))
