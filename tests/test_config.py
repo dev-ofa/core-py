@@ -17,9 +17,22 @@ class DBConfig:
 
 @dataclass
 class AppConfig:
+    app: dict[str, str] = field(default_factory=dict)
     http: HTTPConfig = field(default_factory=HTTPConfig)
     db: DBConfig = field(default_factory=DBConfig)
     debug: bool = False
+
+
+@dataclass
+class ServiceConfig:
+    profile: str = ""
+
+
+@dataclass
+class CustomDeployEnvConfig:
+    service: ServiceConfig = field(default_factory=ServiceConfig)
+    http: HTTPConfig = field(default_factory=HTTPConfig)
+    db: DBConfig = field(default_factory=DBConfig)
 
 
 @dataclass
@@ -40,6 +53,7 @@ def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
         "http:\n  port: 8080\ndb:\n  uri: sqlite://default\ndebug: false\n"
     )
     (cfg_dir / "config.local.yaml").write_text("http:\n  port: 8081\n")
+    monkeypatch.setenv("APP__ENV", "dev")
     monkeypatch.setenv("APP__DB__URI", "sqlite://env")
     monkeypatch.setenv("APP__HTTP__PORT", "9090")
 
@@ -56,6 +70,7 @@ def test_load_merges_files_env_and_flags(tmp_path, monkeypatch):
 
     assert out.http.port == 9090
     assert out.db.uri == "sqlite://env"
+    assert out.app["env"] == "dev"
     assert out.debug is True
     assert meta.sources == ["default", "local", "env", "flags"]
     assert meta.summary["db"]["uri"] == "***"
@@ -135,7 +150,7 @@ def test_load_reads_env_file_and_runs_validators(tmp_path, monkeypatch):
     def validate_config(cfg: dict[str, object]) -> None:
         seen["config"] = cfg["feature"]
 
-    monkeypatch.setenv("ENV", "DEV")
+    monkeypatch.setenv("APP__ENV", "DEV")
     out, meta = config.load(
         dict,
         config.Options(
@@ -147,8 +162,8 @@ def test_load_reads_env_file_and_runs_validators(tmp_path, monkeypatch):
         ),
     )
 
-    assert out == {"feature": {"ratio": 0.75, "enabled": False}}
-    assert meta.sources == ["default", "env-file"]
+    assert out == {"app": {"env": "DEV"}, "feature": {"ratio": 0.75, "enabled": False}}
+    assert meta.sources == ["default", "env-file", "env"]
     assert seen == {
         "map": {"ratio": 0.75, "enabled": False},
         "config": {"ratio": 0.75, "enabled": False},
@@ -233,3 +248,56 @@ def test_env_to_map_ignores_invalid_env_names(monkeypatch):
     monkeypatch.setenv("APPTEST____BROKEN", "invalid")
 
     assert config._env_to_map("APPTEST", "__") == {"http": {"port": "8080"}}
+
+
+def test_deploy_env_selector_maps_by_env_rules(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "app:\n  name: demo\nhttp:\n  port: 8080\ndb:\n  uri: sqlite://default\n"
+    )
+    (cfg_dir / "config.dev.yaml").write_text("http:\n  port: 8081\n")
+    monkeypatch.setenv("APP__ENV", "dev")
+    monkeypatch.setenv("APP__DB__URI", "sqlite://env")
+
+    out, meta = config.load(
+        dict,
+        config.Options(
+            default_config_path=str(cfg_dir / "config.yaml"),
+            required_keys=["db.uri"],
+            sensitive_keys=["uri"],
+            log_enabled=False,
+        ),
+    )
+
+    assert out["app"]["env"] == "dev"
+    assert out["http"]["port"] == 8081
+    assert "env" not in out
+    assert "env" not in meta.summary
+
+
+def test_custom_deploy_env_key_changes_final_path(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "http:\n  port: 8080\ndb:\n  uri: sqlite://default\n"
+    )
+    (cfg_dir / "config.dev.yaml").write_text("http:\n  port: 8081\n")
+    monkeypatch.setenv("SERVICE__PROFILE", "dev")
+    monkeypatch.setenv("SERVICE__DB__URI", "sqlite://env")
+
+    out, meta = config.load(
+        CustomDeployEnvConfig,
+        config.Options(
+            default_config_path=str(cfg_dir / "config.yaml"),
+            env_prefix="SERVICE",
+            deploy_env_key="PROFILE",
+            required_keys=["db.uri"],
+            sensitive_keys=["uri"],
+            log_enabled=False,
+        ),
+    )
+
+    assert out.service.profile == "dev"
+    assert out.http.port == 8081
+    assert meta.sources == ["default", "env-file", "env"]

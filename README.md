@@ -53,9 +53,10 @@ cfg, meta = config.load(AppConfig, config.Options(required_keys=["db.uri"]))
 
 - Hot reload is not supported. Config changes require a process restart.
 - Standard config source precedence is: default config file < environment-specific config file < local override file < environment variables.
-- The default config file is `configs/config.yaml`. When `ENV=dev`, `configs/config.dev.yaml` is included as the environment-specific source. If `configs/config.local.yaml` exists, it participates as the local override source.
+- The default config file is `configs/config.yaml`. When `APP__ENV=dev`, `configs/config.dev.yaml` is included as the environment-specific source. If `configs/config.local.yaml` exists, it participates as the local override source.
 - `Options.default_config_path` is the path to the base config file. When passed explicitly, the current implementation uses that file as the base source and keeps looking for `config.{env}.yaml` and `config.local.yaml` in the same directory.
 - Environment variables use the `APP` prefix and `__` as the hierarchy separator by default. For example, `APP__DB__URI` maps to the canonical path `db.uri`.
+- The deployment environment selector also participates in final config overrides. With the defaults, `APP__ENV=dev` maps to `app.env=dev`. Customizing `Options.env_prefix`, `Options.env_separator`, or `Options.deploy_env_key` changes both the deployment environment variable name and the final config path, e.g. `SERVICE__PROFILE=dev` maps to `service.profile=dev`.
 - Environment variable names must use uppercase ASCII letters, digits, and underscores. Names outside that rule are ignored.
 - `Options.args` is a `core-py` implementation extension and not part of the standard config sources. The current implementation supports `--group.key=value` with precedence above environment variables, and it should only be used for local debugging, temporary diagnostics, and tests.
 - Command-line flags must not be used for secrets, passwords, tokens, or other sensitive config. In shared environments, sensitive config must come from environment variables or secure storage. Local development may use `config.local.yaml` for sensitive values.

@@ -27,6 +27,7 @@ class Options:
     default_config_path: str = "configs/config.yaml"
     env_prefix: str = "APP"
     env_separator: str = "__"
+    # deploy_env_key is the logical key of deployment profile, e.g. ENV -> APP__ENV.
     deploy_env_key: str = "ENV"
     args: Sequence[str] | None = None
     required_keys: Sequence[str] = field(default_factory=tuple)
@@ -68,7 +69,7 @@ def load(
         _record_sources(source_map, default_map, "default")
         sources.append("default")
 
-    deploy_env = os.getenv(opts.deploy_env_key, "").strip()
+    deploy_env = _resolve_deploy_env(opts)
     if deploy_env:
         env_file, ok = _load_config_if_exists(str(base_dir / f"config.{deploy_env.lower()}.yaml"))
         if ok:
@@ -82,7 +83,7 @@ def load(
         _record_sources(source_map, local_file, "local")
         sources.append("local")
 
-    env_map = _env_to_map(opts.env_prefix, opts.env_separator)
+    env_map = _env_to_map(opts.env_prefix, opts.env_separator, opts.deploy_env_key)
     if env_map:
         merged = _merge_maps(merged, _apply_typed_overrides(merged, env_map))
         _record_sources(source_map, env_map, "env")
@@ -170,21 +171,44 @@ def _get_path(data: Mapping[str, Any], nodes: Sequence[str]) -> tuple[Any, bool]
     return cur, True
 
 
-def _env_to_map(prefix: str, sep: str) -> dict[str, Any]:
+def _env_to_map(prefix: str, sep: str, deploy_env_key: str = "") -> dict[str, Any]:
     ret: dict[str, Any] = {}
     if not prefix or not sep:
         return ret
     env_prefix = prefix + sep
+    deploy_env_var = _deploy_env_var_name(
+        Options(env_prefix=prefix, env_separator=sep, deploy_env_key=deploy_env_key)
+    )
     for key, value in os.environ.items():
         if not key.startswith(env_prefix):
             continue
         if not _is_valid_env_name(key):
+            continue
+        if deploy_env_key and key == deploy_env_var:
+            _set_path(ret, [prefix.lower(), *[p.lower() for p in deploy_env_key.split(sep)]], value)
             continue
         path = key.removeprefix(env_prefix)
         nodes = path.split(sep)
         if path and all(nodes):
             _set_path(ret, [p.lower() for p in nodes], value)
     return ret
+
+
+def _resolve_deploy_env(opts: Options) -> str:
+    deploy_env_var = _deploy_env_var_name(opts)
+    if deploy_env_var:
+        deploy_env = os.getenv(deploy_env_var, "").strip()
+        if deploy_env:
+            return deploy_env
+    return ""
+
+
+def _deploy_env_var_name(opts: Options) -> str:
+    if not opts.deploy_env_key:
+        return ""
+    if not opts.env_prefix or not opts.env_separator:
+        return opts.deploy_env_key
+    return f"{opts.env_prefix}{opts.env_separator}{opts.deploy_env_key}"
 
 
 def _is_valid_env_name(name: str) -> bool:
