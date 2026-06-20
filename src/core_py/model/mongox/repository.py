@@ -54,20 +54,20 @@ class CollectionRepository(Generic[P, T]):
     def get_merged_repo_opt(self) -> model_mod.RepoOpt:
         return model_mod.merge_repo_opt(self._opt)
 
-    def inject_cond(self, filter_: dict[str, Any] | None) -> dict[str, Any]:
+    def _inject_cond(self, filter_: dict[str, Any] | None) -> dict[str, Any]:
         ret = cast(dict[str, Any], to_bson_value(dict(filter_ or {})))
         self._inject_isolation_cond(ret)
         self._inject_soft_delete_cond(ret)
         return ret
 
     async def find(self, filter_: dict[str, Any] | None = None, **find_opts: Any) -> list[T]:
-        injected = self.inject_cond(filter_)
+        injected = self._inject_cond(filter_)
         cursor = await maybe_await(self._collection.find(injected, **find_opts))
         rows = await collect_async_iterable(cursor)
         return [cast(T, decode_document(self._entity_type, doc, self._id_key)) for doc in rows]
 
     async def page_query(self, input_: PageQueryInput) -> model_mod.PagedResult[T]:
-        filter_ = self.inject_cond(input_.filter)
+        filter_ = self._inject_cond(input_.filter)
         total_count = int(await maybe_await(self._collection.count_documents(filter_)))
         find_opts: dict[str, Any] = {}
         limit, skip = page_limit_skip(input_.pager)
@@ -88,7 +88,7 @@ class CollectionRepository(Generic[P, T]):
         return model_mod.PagedResult(rows=rows, total_count=total_count)
 
     async def feed_query(self, input_: FeedQueryInput) -> model_mod.FeedResult[T]:
-        filter_ = self.inject_cond(input_.filter)
+        filter_ = self._inject_cond(input_.filter)
         page_size, _, page_token = 0, 0, ""
         if input_.pager is not None:
             if hasattr(input_.pager, "get_page_info"):
@@ -145,7 +145,7 @@ class CollectionRepository(Generic[P, T]):
         return await self.get_by_filter({self._id_key: id_})
 
     async def get_by_filter(self, filter_: dict[str, Any]) -> T:
-        injected = self.inject_cond(filter_)
+        injected = self._inject_cond(filter_)
         opt = self.get_merged_repo_opt()
         attempts = 3 if opt.try_fix_sync_delay == model_mod.FIXED_STRATEGY_BACKOFF else 1
         last_err: Exception | None = None
@@ -190,7 +190,7 @@ class CollectionRepository(Generic[P, T]):
 
     async def patch_raw(self, input_: PatchRawInput) -> None:
         filter_ = (
-            dict(input_.filter) if input_.skip_inject_cond else self.inject_cond(input_.filter)
+            dict(input_.filter) if input_.skip_inject_cond else self._inject_cond(input_.filter)
         )
         payload = {
             key: to_bson_value(value, self._id_key) for key, value in input_.patch_payload.items()
@@ -223,7 +223,7 @@ class CollectionRepository(Generic[P, T]):
             await self.update(doc)
             return
 
-        filter_ = self.inject_cond({self._id_key: get_id(doc)})
+        filter_ = self._inject_cond({self._id_key: get_id(doc)})
         result = await maybe_await(self._collection.delete_one(filter_))
         if int(getattr(result, "deleted_count", 0)) == 0:
             raise data.new_resource_not_found_error(self._resource_by_doc(doc))
@@ -255,7 +255,7 @@ class CollectionRepository(Generic[P, T]):
         return await self.batch_delete_by_filter({self._id_key: {"$in": ids}})
 
     async def batch_delete_by_filter(self, filter_: dict[str, Any]) -> tuple[int, None]:
-        injected = self.inject_cond(filter_)
+        injected = self._inject_cond(filter_)
         opt = self.get_merged_repo_opt()
         if self._supports_delete_audit() and opt.soft_delete != model_mod.SOFT_DELETE_DISABLE:
             user, ok = context.get_operator()
@@ -323,7 +323,7 @@ class CollectionRepository(Generic[P, T]):
         filter_: dict[str, Any] = {self._id_key: get_id(doc)}
         if ret.has_original_update:
             filter_["updated_at"] = ret.original_updated_at
-        return self.inject_cond(filter_)
+        return self._inject_cond(filter_)
 
     def _collection_name(self) -> str:
         name = getattr(self._collection, "name", "")
