@@ -1,0 +1,21 @@
+src/core_py/model/mongox/repository.py
+  s_2c476d255cbe19::t_b610917cde5824 57,64,70,91,148,193,226,258,326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5dcc26f037cc3ffcf4b7cabbee6864f83e44a5a9",
+  "prompts": {},
+  "sessions": {
+    "s_2c476d255cbe19": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a3406336a48efa7f59b34e9",
+        "model": "gpt-5.5__dev"
+      },
+      "human_author": "xuxin.vinci <xuxin.vinci@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
