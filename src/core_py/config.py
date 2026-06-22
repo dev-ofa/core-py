@@ -71,7 +71,9 @@ def load(
 
     deploy_env = _resolve_deploy_env(opts)
     if deploy_env:
-        env_file, ok = _load_config_if_exists(str(base_dir / f"config.{deploy_env.lower()}.yaml"))
+        env_file, ok = _load_config_if_exists(
+            str(base_dir / f"config.{deploy_env.lower()}.yaml")
+        )
         if ok:
             merged = _merge_maps(merged, env_file)
             _record_sources(source_map, env_file, "env-file")
