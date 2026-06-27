@@ -15,6 +15,7 @@ KEY_REMAINING_TIMEOUT_MS = "REMAINING_TIMEOUT_MS"
 KEY_OPERATOR = "OPERATOR"
 KEY_TENANT_ID = "TENANT_ID"
 KEY_APP_ID = "APP_ID"
+KEY_LOCALE = "LOCALE"
 
 _PASS_PREFIX = "OFA_PASS_"
 _DIRECT_PREFIX = "OFA_DIRECT_"
@@ -130,6 +131,14 @@ def get_app_id() -> tuple[str, bool]:
 
 def set_app_id(value: str) -> None:
     set_pass_value(KEY_APP_ID, value)
+
+
+def get_locale() -> tuple[str, bool]:
+    return get_pass_value(KEY_LOCALE)
+
+
+def set_locale(value: str) -> None:
+    set_pass_value(KEY_LOCALE, value)
 
 
 def _copy_context(ctx: Context | None) -> dict[str, Any]:
