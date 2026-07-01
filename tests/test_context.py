@@ -9,11 +9,13 @@ def test_context_pass_and_direct_headers() -> None:
     with context.use_context():
         context.set_trace_id("trace-1")
         context.set_request_id("req-1")
+        context.set_request_deadline(100.0)
         context.set_operator("user-1")
         context.set_locale("en-US")
 
         assert context.get_trace_id() == ("trace-1", True)
         assert context.get_request_id() == ("req-1", True)
+        assert context.get_request_deadline() == (100.0, True)
         assert context.get_locale() == ("en-US", True)
         assert context.pass_headers() == {
             "OFA_PASS_TRACE_ID": "trace-1",
@@ -22,6 +24,7 @@ def test_context_pass_and_direct_headers() -> None:
         }
         assert context.fixed_key("OFA_TRACE_ID") == "OFA_PASS_TRACE_ID"
         assert context.fixed_key_direct("REQUEST_ID") == "OFA_DIRECT_REQUEST_ID"
+        assert context.fixed_key_value("REQUEST_DEADLINE") == "OFA_REQUEST_DEADLINE"
 
 
 def test_implicit_context_in_sync_scope() -> None:

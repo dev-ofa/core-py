@@ -815,23 +815,18 @@ def inject_trace_headers(headers: dict[str, str], deadline: float | None = None)
         if remaining <= 0:
             raise TimeoutBudgetExhaustedError("httpx: timeout budget exhausted")
         remaining_ms = str(int(remaining * 1000))
-        context.set_remaining_timeout_ms(remaining_ms)
         headers[HEADER_REMAINING_TIMEOUT_MS] = remaining_ms
     return request_id
 
 
 def _deadline_from_context(now: float | None = None) -> float | None:
-    raw_remaining, ok = context.get_remaining_timeout_ms()
+    deadline, ok = context.get_request_deadline()
     if not ok:
         return None
-    try:
-        remaining_ms = int(raw_remaining)
-    except ValueError:
-        return None
-    if remaining_ms <= 0:
-        raise TimeoutBudgetExhaustedError("httpx: timeout budget exhausted")
     base = time.time() if now is None else now
-    return base + remaining_ms / 1000
+    if deadline <= base:
+        raise TimeoutBudgetExhaustedError("httpx: timeout budget exhausted")
+    return deadline
 
 
 def context_from_headers(
@@ -855,8 +850,9 @@ def context_from_headers(
     if max_timeout > 0 and (timeout == 0 or timeout > max_timeout):
         timeout = max_timeout
     if timeout > 0:
-        context.set_remaining_timeout_ms(str(int(timeout * 1000)))
-        return time.time() + timeout
+        deadline = time.time() + timeout
+        context.set_request_deadline(deadline)
+        return deadline
     return None
 
 

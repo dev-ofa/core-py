@@ -12,6 +12,7 @@ Context = Mapping[str, Any]
 KEY_TRACE_ID = "TRACE_ID"
 KEY_REQUEST_ID = "REQUEST_ID"
 KEY_REMAINING_TIMEOUT_MS = "REMAINING_TIMEOUT_MS"
+KEY_REQUEST_DEADLINE = "REQUEST_DEADLINE"
 KEY_OPERATOR = "OPERATOR"
 KEY_TENANT_ID = "TENANT_ID"
 KEY_APP_ID = "APP_ID"
@@ -61,6 +62,13 @@ def fixed_key_direct(key: str) -> str:
     return _DIRECT_PREFIX + normalized.removeprefix("OFA_")
 
 
+def fixed_key_value(key: str) -> str:
+    normalized = key.upper()
+    if normalized.startswith("OFA_"):
+        return normalized
+    return "OFA_" + normalized
+
+
 def get_pass_value(key: str) -> tuple[str, bool]:
     return _get_string_value(fixed_key(key))
 
@@ -107,6 +115,17 @@ def get_remaining_timeout_ms() -> tuple[str, bool]:
 
 def set_remaining_timeout_ms(value: str) -> None:
     set_direct_value(KEY_REMAINING_TIMEOUT_MS, value)
+
+
+def get_request_deadline() -> tuple[float, bool]:
+    value = current_context().get(fixed_key_value(KEY_REQUEST_DEADLINE))
+    if not isinstance(value, float) or value <= 0:
+        return 0.0, False
+    return value, True
+
+
+def set_request_deadline(value: float) -> None:
+    _update_value(fixed_key_value(KEY_REQUEST_DEADLINE), value)
 
 
 def get_operator() -> tuple[str, bool]:

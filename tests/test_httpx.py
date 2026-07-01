@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from typing import Any
@@ -620,6 +621,7 @@ async def test_httpx_restores_request_scoped_context_after_call() -> None:
             assert context.get_operator() == ("user-restore", True)
             assert context.get_request_id() == ("", False)
             assert context.get_remaining_timeout_ms() == ("", False)
+            assert context.get_request_deadline() == (0.0, False)
         assert payload["request_id"].startswith("req_")
     finally:
         server.shutdown()
@@ -642,14 +644,15 @@ def test_use_context_from_headers_restores_outer_context() -> None:
             assert context.get_trace_id() == ("trace-outer", True)
             assert context.get_operator() == ("user-inbound", True)
             assert context.get_request_id() == ("req-inbound", True)
-            remaining, ok = context.get_remaining_timeout_ms()
+            request_deadline, ok = context.get_request_deadline()
             assert ok is True
-            assert remaining == "200"
+            assert request_deadline > time.time()
 
         assert context.get_trace_id() == ("trace-outer", True)
         assert context.get_operator() == ("", False)
         assert context.get_request_id() == ("", False)
         assert context.get_remaining_timeout_ms() == ("", False)
+        assert context.get_request_deadline() == (0.0, False)
 
 
 def test_context_from_headers_accepts_lowercase_direct_headers() -> None:
@@ -666,7 +669,9 @@ def test_context_from_headers_accepts_lowercase_direct_headers() -> None:
         assert deadline is not None
         assert context.get_operator() == ("user-inbound", True)
         assert context.get_request_id() == ("req-inbound", True)
-        assert context.get_remaining_timeout_ms() == ("250", True)
+        request_deadline, ok = context.get_request_deadline()
+        assert ok is True
+        assert request_deadline > time.time()
 
 
 @pytest.mark.asyncio
