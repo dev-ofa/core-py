@@ -1,12 +1,14 @@
 # core-py
 
-`core-py` is the Python implementation of the `core-go` capability set. It follows the recommended Python `src/` layout. The `core-go` repository is a useful reference, but implementation details and public APIs should follow Python best practices and conventions.
+`core-py` is the Python foundation library implementing the OFA spec. It follows the recommended Python `src/` layout. The OFA spec under `docs/spec/` is the compatibility source of truth. `core-go` and other standard libraries implementing the OFA spec are useful references, but `core-py` does not aim to mechanically mirror any single implementation. Its public APIs should stay Pythonic while keeping semantics and recommended usage close to other standard OFA libraries.
 
 ## API Conventions
 
+- `docs/spec` is the authority for cross-language behavior, protocol fields, storage formats, and runtime compatibility.
 - `core-py` exposes Python-style APIs first, with public interfaces named in `snake_case`.
 - There is no requirement to preserve Go-style aliases, case-compatible entry points, or a one-to-one migration layer mirroring Go package names.
-- When aligning with `core-go`, prioritize stable behavior, protocol fields, storage formats, and runtime compatibility over mechanically copying Go naming.
+- `core-go` is a useful reference implementation, but not the source of truth for `core-py`.
+- When aligning with other OFA implementations, prioritize stable behavior, protocol fields, storage formats, runtime compatibility, and similar usage patterns over mechanically copying `core-go` naming or package layout.
 
 ## Concurrency and IO Conventions
 
