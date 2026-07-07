@@ -177,7 +177,9 @@ make sync fmt lint type test
 
 ## Packaging and Publishing
 
-Packaging and publishing also use `uv`:
+Packaging and publishing use `uv`.
+
+Build the source distribution and wheel locally:
 
 ```bash
 make build
@@ -185,13 +187,39 @@ make build
 
 This generates the source distribution and wheel under `dist/`.
 
-Publish to PyPI:
+The standard release path is GitHub Actions plus PyPI Trusted Publishing. The release workflow is defined in [`.github/workflows/publish.yml`](.github/workflows/publish.yml) and is triggered by a version tag push.
+
+Recommended release steps for maintainers:
+
+1. Update `[project].version` in `pyproject.toml`.
+2. Refresh `uv.lock` if needed so the local editable package version stays in sync.
+3. Run the full local verification:
+
+   ```bash
+   make sync fmt lint type test build
+   ```
+
+4. Commit the release change and push it to `main`.
+5. Create and push an annotated release tag in the standard format `v<version>`, for example:
+
+   ```bash
+   git tag -a v0.1.2 -m "Release v0.1.2"
+   git push origin v0.1.2
+   ```
+
+6. Wait for the `publish` GitHub Actions workflow to finish. The workflow verifies that the tag version matches `pyproject.toml`, builds `dist/*`, runs a package metadata check, and then publishes to PyPI.
+
+Use `v0.1.2` style tags. Do not use `v.0.1.2`.
+
+The repository also has a `ci` workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which runs lint, type check, tests, and package build on `push` and `pull_request`.
+
+Manual publish to PyPI is still available as a fallback path:
 
 ```bash
 make publish-pip
 ```
 
-Before running this command, prepare the credentials required by `uv publish`, for example by setting `UV_PUBLISH_TOKEN` or by configuring authentication the way `uv` expects.
+This path calls `uv publish` directly and requires local PyPI publish credentials. Prefer the GitHub Actions release flow above for normal releases.
 
 Publish to a local debugging environment:
 
