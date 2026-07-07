@@ -1,0 +1,63 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ofa-core-py
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Verify tag matches pyproject version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          version = data["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+
+          match = re.fullmatch(r"v\.?(.+)", tag)
+          if not match:
+              raise SystemExit(f"unsupported tag format: {tag}")
+
+          tag_version = match.group(1)
+          if tag_version != version:
+              raise SystemExit(f"tag {tag} does not match project.version {version}")
+
+          print(f"Publishing ofa-core-py {version} from tag {tag}")
+          PY
+
+      - name: Build
+        run: uv build
+
+      - name: Check package metadata
+        run: uvx twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
