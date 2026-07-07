@@ -24,7 +24,7 @@
 ## Modules
 
 - `core_py.config`: config loading, merge precedence, required-key validation, sensitive-key validation, redacted summaries, and stable hashing
-- `core_py.context`: cross-call context propagation with unified `OFA_PASS_*` and `OFA_DIRECT_*` keys
+- `core_py.context`: cross-call context propagation with unified `ofa-pass-*`, `ofa-direct-*`, and `ofa-*` string keys
 - `core_py.trace`: trace/request header constants and ID generation
 - `core_py.logging`: unified logging facade carrying trace/request context
 - `core_py.httpx`: HTTP client with trace propagation, timeout budgets, bounded retries, and pluggable service discovery

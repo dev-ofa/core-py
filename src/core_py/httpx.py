@@ -835,9 +835,9 @@ def context_from_headers(
     max_timeout: float = 0.0,
 ) -> float | None:
     current = context.current_context()
-    normalized_headers = {key.upper(): val for key, val in headers.items()}
+    normalized_headers = {key.lower(): val for key, val in headers.items()}
     for key, val in normalized_headers.items():
-        if key.upper().startswith("OFA_PASS_"):
+        if key.startswith("ofa-pass-"):
             current[context.fixed_key(key)] = val
     if request_id := normalized_headers.get(HEADER_REQUEST_ID):
         current[context.fixed_key_direct(HEADER_REQUEST_ID)] = request_id

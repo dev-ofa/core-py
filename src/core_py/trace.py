@@ -6,13 +6,13 @@ import base64
 import secrets
 from datetime import UTC, datetime
 
-HEADER_TRACE_ID = "OFA_PASS_TRACE_ID"
-HEADER_OPERATOR = "OFA_PASS_OPERATOR"
-HEADER_TENANT_ID = "OFA_PASS_TENANT_ID"
-HEADER_APP_ID = "OFA_PASS_APP_ID"
-HEADER_LOCALE = "OFA_PASS_LOCALE"
-HEADER_REQUEST_ID = "OFA_DIRECT_REQUEST_ID"
-HEADER_REMAINING_TIMEOUT_MS = "OFA_DIRECT_REMAINING_TIMEOUT_MS"
+HEADER_TRACE_ID = "ofa-pass-trace-id"
+HEADER_OPERATOR = "ofa-pass-operator"
+HEADER_TENANT_ID = "ofa-pass-tenant-id"
+HEADER_APP_ID = "ofa-pass-app-id"
+HEADER_LOCALE = "ofa-pass-locale"
+HEADER_REQUEST_ID = "ofa-direct-request-id"
+HEADER_REMAINING_TIMEOUT_MS = "ofa-direct-remaining-timeout-ms"
 
 
 def new_trace_id() -> str:

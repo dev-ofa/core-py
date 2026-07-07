@@ -18,13 +18,16 @@ def test_context_pass_and_direct_headers() -> None:
         assert context.get_request_deadline() == (100.0, True)
         assert context.get_locale() == ("en-US", True)
         assert context.pass_headers() == {
-            "OFA_PASS_TRACE_ID": "trace-1",
-            "OFA_PASS_OPERATOR": "user-1",
-            "OFA_PASS_LOCALE": "en-US",
+            "ofa-pass-trace-id": "trace-1",
+            "ofa-pass-operator": "user-1",
+            "ofa-pass-locale": "en-US",
         }
-        assert context.fixed_key("OFA_TRACE_ID") == "OFA_PASS_TRACE_ID"
-        assert context.fixed_key_direct("REQUEST_ID") == "OFA_DIRECT_REQUEST_ID"
-        assert context.fixed_key_value("REQUEST_DEADLINE") == "OFA_REQUEST_DEADLINE"
+        assert context.KEY_TRACE_ID == "ofa-pass-trace-id"
+        assert context.KEY_REQUEST_ID == "ofa-direct-request-id"
+        assert context.KEY_REQUEST_DEADLINE == "ofa-request-deadline"
+        assert context.fixed_key("ofa-trace-id") == "ofa-pass-trace-id"
+        assert context.fixed_key_direct("request_id") == "ofa-direct-request-id"
+        assert context.fixed_key_value("request_deadline") == "ofa-request-deadline"
 
 
 def test_implicit_context_in_sync_scope() -> None:
@@ -39,9 +42,9 @@ def test_implicit_context_in_sync_scope() -> None:
         assert context.get_trace_id() == ("trace-sync", True)
         assert context.get_request_id() == ("req-sync", True)
         assert context.pass_headers() == {
-            "OFA_PASS_TRACE_ID": "trace-sync",
-            "OFA_PASS_OPERATOR": "user-sync",
-            "OFA_PASS_LOCALE": "zh-CN",
+            "ofa-pass-trace-id": "trace-sync",
+            "ofa-pass-operator": "user-sync",
+            "ofa-pass-locale": "zh-CN",
         }
 
     assert context.get_trace_id() == ("", False)

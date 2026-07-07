@@ -1,4 +1,4 @@
-"""Implicit context propagation helpers for OFA pass/direct headers."""
+"""Implicit context propagation helpers for OFA tracing and context keys."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ from typing import Any
 
 Context = Mapping[str, Any]
 
-KEY_TRACE_ID = "TRACE_ID"
-KEY_REQUEST_ID = "REQUEST_ID"
-KEY_REMAINING_TIMEOUT_MS = "REMAINING_TIMEOUT_MS"
-KEY_REQUEST_DEADLINE = "REQUEST_DEADLINE"
-KEY_OPERATOR = "OPERATOR"
-KEY_TENANT_ID = "TENANT_ID"
-KEY_APP_ID = "APP_ID"
-KEY_LOCALE = "LOCALE"
+KEY_TRACE_ID = "ofa-pass-trace-id"
+KEY_REQUEST_ID = "ofa-direct-request-id"
+KEY_REMAINING_TIMEOUT_MS = "ofa-direct-remaining-timeout-ms"
+KEY_REQUEST_DEADLINE = "ofa-request-deadline"
+KEY_OPERATOR = "ofa-pass-operator"
+KEY_TENANT_ID = "ofa-pass-tenant-id"
+KEY_APP_ID = "ofa-pass-app-id"
+KEY_LOCALE = "ofa-pass-locale"
 
-_PASS_PREFIX = "OFA_PASS_"
-_DIRECT_PREFIX = "OFA_DIRECT_"
+_PASS_PREFIX = "ofa-pass-"
+_DIRECT_PREFIX = "ofa-direct-"
 _CURRENT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("core_py_context", default=None)
 
 
@@ -49,24 +49,24 @@ def use_context(ctx: Context | None = None) -> Iterator[dict[str, Any]]:
 
 
 def fixed_key(key: str) -> str:
-    normalized = key.upper()
+    normalized = _normalize_key(key)
     if normalized.startswith(_PASS_PREFIX):
         return normalized
-    return _PASS_PREFIX + normalized.removeprefix("OFA_")
+    return _PASS_PREFIX + normalized.removeprefix("ofa-")
 
 
 def fixed_key_direct(key: str) -> str:
-    normalized = key.upper()
+    normalized = _normalize_key(key)
     if normalized.startswith(_DIRECT_PREFIX):
         return normalized
-    return _DIRECT_PREFIX + normalized.removeprefix("OFA_")
+    return _DIRECT_PREFIX + normalized.removeprefix("ofa-")
 
 
 def fixed_key_value(key: str) -> str:
-    normalized = key.upper()
-    if normalized.startswith("OFA_"):
+    normalized = _normalize_key(key)
+    if normalized.startswith("ofa-"):
         return normalized
-    return "OFA_" + normalized
+    return "ofa-" + normalized
 
 
 def get_pass_value(key: str) -> tuple[str, bool]:
@@ -162,6 +162,10 @@ def set_locale(value: str) -> None:
 
 def _copy_context(ctx: Context | None) -> dict[str, Any]:
     return dict(ctx) if ctx else {}
+
+
+def _normalize_key(key: str) -> str:
+    return key.strip().lower().replace("_", "-")
 
 
 def _get_string_value(key: str) -> tuple[str, bool]:
