@@ -437,7 +437,6 @@ class Agent:
         self._ops = list(ops)
         self._deadline: float | None = None
         self._opener: Any | None = None
-        self._timeout_quota_explicit = False
 
     def ops(self, *ops: AgentOp) -> Agent:
         self._ops.extend(ops)
@@ -730,12 +729,9 @@ class Agent:
     def _init_deadline(self) -> float:
         now = time.time()
         inherited_deadline = _deadline_from_context(now)
-        configured_deadline = now + self.timeout_quota
-        if inherited_deadline is None:
-            return configured_deadline
-        if self._timeout_quota_explicit:
-            return min(inherited_deadline, configured_deadline)
-        return inherited_deadline
+        if inherited_deadline is not None:
+            return inherited_deadline
+        return now + self.timeout_quota
 
 
 def _assign_payload(target: Any, payload: Any) -> None:
@@ -973,7 +969,6 @@ def retry_status_codes(codes: list[int]) -> AgentOp:
 def timeout_quota(seconds: float) -> AgentOp:
     def op(agent: Agent) -> None:
         agent.timeout_quota = seconds
-        agent._timeout_quota_explicit = True
 
     return op
 

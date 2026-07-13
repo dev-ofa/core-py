@@ -695,12 +695,14 @@ async def test_httpx_inherits_inbound_remaining_timeout_budget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_httpx_explicit_timeout_quota_can_only_tighten_inbound_budget() -> None:
+async def test_httpx_explicit_timeout_quota_keeps_inherited_deadline() -> None:
     captured: dict[str, float | None] = {}
+    captured_headers: dict[str, str] = {}
     agent = httpx.get("http://example.test/ping", httpx.timeout_quota(0.05))
 
     async def fake_send(req: httpx.PreparedRequest) -> httpx.Response:
         captured["timeout"] = req.timeout
+        captured_headers.update(req.headers)
         return httpx.Response(200, {}, b"", req.url)
 
     agent._send_request = fake_send  # type: ignore[method-assign]
@@ -711,7 +713,11 @@ async def test_httpx_explicit_timeout_quota_can_only_tighten_inbound_budget() ->
         await agent.do()
 
     assert captured["timeout"] is not None
-    assert captured["timeout"] <= 0.1
+    assert captured["timeout"] > 0.5
+    assert captured["timeout"] <= 1.0
+    remaining_timeout_ms = int(captured_headers[httpx.HEADER_REMAINING_TIMEOUT_MS])
+    assert remaining_timeout_ms > 500
+    assert remaining_timeout_ms <= 1000
 
 
 @pytest.mark.asyncio
