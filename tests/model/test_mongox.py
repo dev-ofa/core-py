@@ -17,6 +17,44 @@ class Item(model.CreateAudit, model.UpdateAudit, model.DeleteAudit, model.Tenant
 
 
 @dataclass
+class ContractAuditItem:
+    id: str = ""
+    name: str = ""
+    created_at: datetime | None = None
+    created_by: str = ""
+    updated_at: datetime | None = None
+    updated_by: str = ""
+    deleted_at: datetime | None = None
+    deleted_by: str = ""
+    tenant_id: str = ""
+    app_id: str = ""
+
+    def get_creator_info(self) -> tuple[str, datetime | None]:
+        return self.created_by, self.created_at
+
+    def set_creator(self, user: str) -> None:
+        self.created_by = user
+        self.created_at = datetime.now(UTC)
+
+    def get_update_time_raw(self) -> datetime | None:
+        return self.updated_at
+
+    def set_updater(self, user: str) -> None:
+        self.updated_by = user
+        self.updated_at = datetime.now(UTC)
+
+    def set_deleter(self, user: str) -> None:
+        self.deleted_by = user
+        self.deleted_at = datetime.now(UTC)
+
+    def set_tenant_id(self, id_: str) -> None:
+        self.tenant_id = id_
+
+    def set_app_id(self, id_: str) -> None:
+        self.app_id = id_
+
+
+@dataclass
 class IntIDItem:
     id: int = 0
     name: str = ""
@@ -66,7 +104,7 @@ class _Result:
     matched_count: int = 0
     modified_count: int = 0
     deleted_count: int = 0
-    upserted_count: int = 0
+    upserted_id: Any = None
 
 
 class _DuplicateKeyError(Exception):
@@ -116,7 +154,7 @@ class _FakeCollection:
                 return _Result(matched_count=1, modified_count=1)
         if upsert:
             self.insert_one(doc)
-            return _Result(upserted_count=1)
+            return _Result(upserted_id=doc["_id"])
         return _Result()
 
     def update_one(self, filter_: dict[str, Any], update: dict[str, Any]) -> _Result:
@@ -168,6 +206,29 @@ async def test_collection_lib_create_and_find_with_repo_rules() -> None:
         assert [row.id for row in rows] == ["i-1"]
         assert collection.docs[0]["_id"] == "i-1"
         assert collection.docs[0]["updated_by"] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_collection_lib_audit_support_uses_method_contract() -> None:
+    with context.use_context():
+        _seed_context()
+        collection = _FakeCollection()
+        lib = mongox.CollectionRepository(collection, ContractAuditItem).with_repo_opt(
+            model.RepoOpt(data_isolation=model.DATA_ISOLATION_TENANT)
+        )
+
+        created = await lib.create(ContractAuditItem(id="i-1", name="first"))
+        collection.insert_one({"_id": "i-2", "name": "other", "tenant_id": "other-tenant"})
+        rows = await lib.find({})
+        await lib.delete(created)
+
+        raw = collection.find_one({"_id": "i-1"})
+        assert [row.id for row in rows] == ["i-1"]
+        assert raw is not None
+        assert raw["created_by"] == "user-1"
+        assert raw["tenant_id"] == "tenant-1"
+        assert raw["deleted_by"] == "user-1"
+        assert await lib.find({}) == []
 
 
 @pytest.mark.asyncio

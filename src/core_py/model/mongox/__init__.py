@@ -2,9 +2,10 @@
 
 from core_py.model.mongox.patch import build_patch_payload, build_patch_payload_with_parent
 from core_py.model.mongox.query import FeedQueryInput, PageQueryInput, PatchRawInput
-from core_py.model.mongox.repository import CollectionRepository
+from core_py.model.mongox.repository import CollectionLike, CollectionRepository
 
 __all__ = [
+    "CollectionLike",
     "CollectionRepository",
     "FeedQueryInput",
     "PageQueryInput",

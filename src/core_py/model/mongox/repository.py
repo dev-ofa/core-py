@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from typing import Any, Generic, TypeVar, cast, get_type_hints
+from collections.abc import Iterable
+from typing import Any, Generic, Protocol, TypeVar, cast, get_type_hints, runtime_checkable
 
 from core_py import context, data
 from core_py import model as model_mod
@@ -10,14 +11,11 @@ from core_py._async import collect_async_iterable, maybe_await
 from core_py.model.mongox.codec import (
     decode_document,
     field_bson_meta,
-    get_creator_info,
     get_id,
     is_duplicate_error,
     parse_bson_meta,
-    supports,
     to_bson_value,
     to_document,
-    type_supports,
 )
 from core_py.model.mongox.patch import build_patch_payload
 from core_py.model.mongox.query import (
@@ -38,8 +36,101 @@ P = TypeVar("P", str, int, SnowflakeID)
 T = TypeVar("T")
 
 
+class _UpdateResultLike(Protocol):
+    matched_count: int
+    modified_count: int
+
+
+class _ReplaceResultLike(_UpdateResultLike, Protocol):
+    upserted_id: Any
+
+
+class _DeleteResultLike(Protocol):
+    deleted_count: int
+
+
+@runtime_checkable
+class _CreatorAuditLike(Protocol):
+    def set_creator(self, user: str) -> None:
+        ...
+
+
+@runtime_checkable
+class _CreatorInfoLike(Protocol):
+    def get_creator_info(self) -> tuple[Any, Any]:
+        ...
+
+
+@runtime_checkable
+class _UpdaterAuditLike(Protocol):
+    def set_updater(self, user: str) -> None:
+        ...
+
+
+@runtime_checkable
+class _DeleterAuditLike(Protocol):
+    def set_deleter(self, user: str) -> None:
+        ...
+
+
+@runtime_checkable
+class _TenantAuditLike(Protocol):
+    def set_tenant_id(self, id_: str) -> None:
+        ...
+
+    def set_app_id(self, id_: str) -> None:
+        ...
+
+
+class CollectionLike(Protocol):
+    """Collection operations required by CollectionRepository."""
+
+    def find(self, filter_: dict[str, Any], **find_opts: Any) -> Iterable[dict[str, Any]] | Any:
+        ...
+
+    def find_one(self, filter_: dict[str, Any]) -> dict[str, Any] | None | Any:
+        ...
+
+    def count_documents(self, filter_: dict[str, Any]) -> int | Any:
+        ...
+
+    def insert_one(self, doc: dict[str, Any]) -> Any:
+        ...
+
+    def insert_many(self, docs: list[dict[str, Any]]) -> Any:
+        ...
+
+    def replace_one(
+        self,
+        filter_: dict[str, Any],
+        doc: dict[str, Any],
+        upsert: bool = False,
+    ) -> _ReplaceResultLike | Any:
+        ...
+
+    def update_one(
+        self,
+        filter_: dict[str, Any],
+        update: dict[str, Any],
+    ) -> _UpdateResultLike | Any:
+        ...
+
+    def update_many(
+        self,
+        filter_: dict[str, Any],
+        update: dict[str, Any],
+    ) -> _UpdateResultLike | Any:
+        ...
+
+    def delete_one(self, filter_: dict[str, Any]) -> _DeleteResultLike | Any:
+        ...
+
+    def delete_many(self, filter_: dict[str, Any]) -> _DeleteResultLike | Any:
+        ...
+
+
 class CollectionRepository(Generic[P, T]):
-    def __init__(self, collection: Any, entity_type: type[T] | None = None) -> None:
+    def __init__(self, collection: CollectionLike, entity_type: type[T] | None = None) -> None:
         if collection is None:
             raise data.new_validation_error("collection should not be empty")
         self._collection = collection
@@ -91,11 +182,7 @@ class CollectionRepository(Generic[P, T]):
         filter_ = self._inject_cond(input_.filter)
         page_size, _, page_token = 0, 0, ""
         if input_.pager is not None:
-            if hasattr(input_.pager, "get_page_info"):
-                page_size, _, page_token = input_.pager.get_page_info()
-            else:
-                page_size = int(getattr(input_.pager, "page_size", 0) or 0)
-                page_token = str(getattr(input_.pager, "page_token", "") or "")
+            page_size, _, page_token = input_.pager.get_page_info()
         if page_size <= 0:
             page_size = 20
 
@@ -117,22 +204,21 @@ class CollectionRepository(Generic[P, T]):
         find_opts["sort"] = feed_sort_conf(cursor_field, input_.is_descending)
 
         cursor = await maybe_await(self._collection.find(filter_, **find_opts))
+        docs = await collect_async_iterable(cursor)
         rows = [
             cast(T, decode_document(self._entity_type, doc, self._id_key))
-            for doc in await collect_async_iterable(cursor)
+            for doc in docs
         ]
         next_page_token = ""
         if len(rows) > page_size:
             rows = rows[:page_size]
-            next_page_token = self._feed_cursor_token(rows[-1], cursor_field)
+            next_page_token = self._feed_cursor_token(docs[page_size - 1], cursor_field)
         return model_mod.FeedResult(rows=rows, next_page_token=next_page_token)
 
-    def _feed_cursor_token(self, row: T, cursor_field: str) -> str:
-        if cursor_field == "_id":
-            return str(get_id(row))
-        if isinstance(row, dict):
-            return str(row[cursor_field])
-        return str(getattr(row, cursor_field))
+    def _feed_cursor_token(self, doc: dict[str, Any], cursor_field: str) -> str:
+        if cursor_field not in doc:
+            raise data.new_validation_error(f"cursor field {cursor_field} not found")
+        return str(doc[cursor_field])
 
     def _feed_cursor_field_type(self, cursor_field: str) -> Any | None:
         if self._entity_type is None:
@@ -207,9 +293,9 @@ class CollectionRepository(Generic[P, T]):
             result = await maybe_await(self._collection.update_many(filter_, update))
         else:
             result = await maybe_await(self._collection.update_one(filter_, update))
-        if int(getattr(result, "matched_count", 0)) == 0:
+        if result.matched_count == 0:
             raise data.new_resource_not_found_error(self._resource_by_filter(filter_))
-        if "updated_at" in filter_ and int(getattr(result, "modified_count", 0)) == 0:
+        if "updated_at" in filter_ and result.modified_count == 0:
             raise data.new_resource_error(
                 data.ERR_CODE_CONFLICT,
                 "optimistic locking failed",
@@ -225,7 +311,7 @@ class CollectionRepository(Generic[P, T]):
 
         filter_ = self._inject_cond({self._id_key: get_id(doc)})
         result = await maybe_await(self._collection.delete_one(filter_))
-        if int(getattr(result, "deleted_count", 0)) == 0:
+        if result.deleted_count == 0:
             raise data.new_resource_not_found_error(self._resource_by_doc(doc))
 
     async def batch_create(self, docs: list[T]) -> None:
@@ -267,13 +353,13 @@ class CollectionRepository(Generic[P, T]):
                     {"$set": {"deleted_at": model_mod._now(), "deleted_by": user}},
                 )
             )
-            matched = int(getattr(result, "matched_count", 0))
+            matched = result.matched_count
             if matched == 0:
                 raise data.new_resource_not_found_error(self._resource_by_filter(injected))
             return matched, None
 
         result = await maybe_await(self._collection.delete_many(injected))
-        deleted = int(getattr(result, "deleted_count", 0))
+        deleted = result.deleted_count
         if deleted == 0:
             raise data.new_resource_not_found_error(self._resource_by_filter(injected))
         return deleted, None
@@ -290,9 +376,9 @@ class CollectionRepository(Generic[P, T]):
                 raise data.new_resource_conflict_error(self._resource_by_doc(doc)) from exc
             raise
 
-        if is_upsert and int(getattr(result, "upserted_count", 0)) > 0:
+        if is_upsert and result.upserted_id is not None:
             return doc
-        if int(getattr(result, "matched_count", 0)) == 0:
+        if result.matched_count == 0:
             check_filter = dict(filter_)
             check_filter.pop("updated_at", None)
             if int(await maybe_await(self._collection.count_documents(check_filter))) > 0:
@@ -302,7 +388,7 @@ class CollectionRepository(Generic[P, T]):
                     self._resource_by_filter(filter_),
                 )
             raise data.new_resource_not_found_error(self._resource_by_filter(filter_))
-        if "updated_at" in filter_ and int(getattr(result, "modified_count", 0)) == 0:
+        if "updated_at" in filter_ and result.modified_count == 0:
             raise data.new_resource_error(
                 data.ERR_CODE_CONFLICT,
                 "optimistic locking failed",
@@ -311,8 +397,8 @@ class CollectionRepository(Generic[P, T]):
         return doc
 
     def _audit_and_build_replace_filter(self, doc: T, is_upsert: bool) -> dict[str, Any]:
-        if is_upsert and supports(doc, "get_creator_info"):
-            _, created_at = get_creator_info(doc)
+        if is_upsert and isinstance(doc, _CreatorInfoLike):
+            _, created_at = doc.get_creator_info()
             if not created_at:
                 model_mod.create_audit(doc)
                 return {self._id_key: get_id(doc)}
@@ -326,7 +412,10 @@ class CollectionRepository(Generic[P, T]):
         return self._inject_cond(filter_)
 
     def _collection_name(self) -> str:
-        name = getattr(self._collection, "name", "")
+        try:
+            name = cast(Any, self._collection).name
+        except AttributeError:
+            return type(self._collection).__name__
         if name:
             return str(name)
         return type(self._collection).__name__
@@ -378,16 +467,20 @@ class CollectionRepository(Generic[P, T]):
             filter_["deleted_at"] = {"$exists": False}
 
     def _supports_create_audit(self) -> bool:
-        return type_supports(self._entity_type, "set_creator")
+        return _entity_supports(self._entity_type, _CreatorAuditLike)
 
     def _supports_update_audit(self) -> bool:
-        return type_supports(self._entity_type, "set_updater")
+        return _entity_supports(self._entity_type, _UpdaterAuditLike)
 
     def _supports_delete_audit(self) -> bool:
-        return type_supports(self._entity_type, "set_deleter")
+        return _entity_supports(self._entity_type, _DeleterAuditLike)
 
     def _supports_tenant_audit(self) -> bool:
-        return type_supports(self._entity_type, "set_tenant_id", "set_app_id")
+        return _entity_supports(self._entity_type, _TenantAuditLike)
+
+
+def _entity_supports(entity_type: type[Any] | None, protocol: Any) -> bool:
+    return entity_type is not None and issubclass(entity_type, protocol)
 
 
 def _dataclass_field_type(entity_type: type[Any], field_name: str) -> Any | None:

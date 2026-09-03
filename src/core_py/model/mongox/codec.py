@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from types import UnionType
-from typing import Any, Union, cast, get_args, get_origin, get_type_hints
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from core_py.model.snowflake_id import SnowflakeID
 
@@ -74,23 +74,6 @@ def get_id(doc: Any) -> Any:
     if isinstance(doc, dict):
         return doc.get("_id", doc.get("id"))
     return getattr(doc, "id", getattr(doc, "_id", None))
-
-
-def get_creator_info(doc: Any) -> tuple[Any, Any]:
-    method = getattr(doc, "get_creator_info", None)
-    if callable(method):
-        return cast(tuple[Any, Any], method())
-    return None, None
-
-
-def type_supports(entity_type: type[Any] | None, *names: str) -> bool:
-    if entity_type is None:
-        return False
-    return all(hasattr(entity_type, name) for name in names)
-
-
-def supports(value: Any, name: str) -> bool:
-    return hasattr(value, name)
 
 
 def field_name(name: str) -> str:

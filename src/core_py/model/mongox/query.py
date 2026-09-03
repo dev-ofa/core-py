@@ -6,6 +6,7 @@ from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
 from core_py import data
+from core_py.model.page import Pager
 from core_py.model.snowflake_id import SnowflakeID
 
 DEFAULT_FEED_CURSOR_FIELD = "_id"
@@ -14,14 +15,14 @@ DEFAULT_FEED_CURSOR_FIELD = "_id"
 @dataclass(slots=True)
 class PageQueryInput:
     filter: dict[str, Any] = field(default_factory=dict)
-    pager: Any = None
-    sort: Any = None
+    pager: Pager | None = None
+    sort: data.Sortable | None = None
 
 
 @dataclass(slots=True)
 class FeedQueryInput:
     filter: dict[str, Any] = field(default_factory=dict)
-    pager: Any = None
+    pager: Pager | None = None
     cursor_field: str = ""
     is_descending: bool = False
 
@@ -34,22 +35,18 @@ class PatchRawInput:
     skip_inject_cond: bool = False
 
 
-def page_limit_skip(pager: Any) -> tuple[int, int]:
+def page_limit_skip(pager: Pager | None) -> tuple[int, int]:
     if pager is None:
         return 0, 0
-    if hasattr(pager, "get_page_info"):
-        page_size, page_num, _ = pager.get_page_info()
-    else:
-        page_size = int(getattr(pager, "page_size", 0) or 0)
-        page_num = int(getattr(pager, "page_num", 0) or 0)
+    page_size, page_num, _ = pager.get_page_info()
     skip = page_size * (page_num - 1) if page_size > 0 and page_num > 0 else 0
     return page_size, skip
 
 
-def sort_conf(sort: Any) -> list[tuple[str, int]]:
+def sort_conf(sort: data.Sortable | None) -> list[tuple[str, int]]:
     if sort is None:
         return []
-    pairs = sort.get_sort_info() if hasattr(sort, "get_sort_info") else []
+    pairs = sort.get_sort_info()
     return [(pair.field, -1 if pair.is_descending else 1) for pair in pairs]
 
 

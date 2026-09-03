@@ -34,6 +34,12 @@
 - `core_py.data`: business error codes, error types, and paging/sort inputs
 - `core_py.dkit`: distributed primitive protocols, mutex helpers, default ID generation, and in-memory/Redis/MongoDB backends
 
+`core_py.model.mongox.CollectionRepository` targets ByteDoc/PyMongo-compatible collections.
+The collection must provide `find`, `find_one`, `count_documents`, `insert_one`,
+`insert_many`, `replace_one`, `update_one`, `update_many`, `delete_one`, and
+`delete_many`. `page_query` and `feed_query` use `model.Pager`; `page_query` sort
+input uses `data.Sortable`.
+
 ## Quick Start
 
 ```python
