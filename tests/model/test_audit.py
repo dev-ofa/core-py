@@ -47,6 +47,17 @@ def test_update_lock_and_audit_returns_original_updated_time() -> None:
         assert item.updated_by == "user-1"
 
 
+def test_merge_repo_opt_allows_explicit_soft_delete_enable() -> None:
+    with context.use_context():
+        model.set_soft_delete(model.SOFT_DELETE_ENABLE)
+
+        merged = model.merge_repo_opt(
+            model.RepoOpt(soft_delete=model.SOFT_DELETE_DISABLE)
+        )
+
+        assert merged.soft_delete == model.SOFT_DELETE_ENABLE
+
+
 def test_audit_helpers_raise_structured_error_without_context() -> None:
     context.clear_current_context()
 
