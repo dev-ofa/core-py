@@ -22,6 +22,16 @@ def test_snowflake_id_is_json_string_and_numeric_convertible() -> None:
     assert json.dumps({"id": id_}) == '{"id": "623949464310157351"}'
 
 
+def test_snowflake_id_does_not_compare_equal_to_int() -> None:
+    id_ = model.SnowflakeID("1")
+
+    assert id_ != 1
+    assert id_.__eq__(1) is NotImplemented
+    assert int.__eq__(1, id_) is NotImplemented
+    assert {id_: "snowflake"}.get(1) is None
+    assert len({id_, 1}) == 2
+
+
 def test_snowflake_id_codec_uses_numeric_storage_and_string_entity_value() -> None:
     item = SnowflakeItem(id=model.SnowflakeID("623949464310157351"), name="item")
 

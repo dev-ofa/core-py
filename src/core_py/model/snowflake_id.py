@@ -47,9 +47,9 @@ class SnowflakeID(str):
     def __index__(self) -> int:
         return int(self)
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: object) -> Any:
         if isinstance(other, int):
-            return int(self) == other
+            return NotImplemented
         return str.__eq__(self, other)
 
     def __hash__(self) -> int:
